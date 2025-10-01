@@ -1,5 +1,5 @@
-from comfy.comfy_types import IO
-from .utils import Field
+from comfy_api.latest import io
+from .utils import mk_name, category
 from .lora_block_weight import LBWLoRALoader
 from nodes import LoraLoader
 
@@ -28,25 +28,9 @@ def get_available_loras(stack: list[dict]) -> list[dict]:
     return available_loras
 
 
-def get_stack(unique_id=None, extra_pnginfo=None, lora_list_str="") -> tuple[list[dict], dict]:
+def get_stack(lora_list_str="") -> tuple[list[dict], dict]:
 
-    lora_list = []
-    try:
-        nodes = extra_pnginfo.get("workflow").get("nodes")
-        for node in nodes:
-            if (str(node.get("id")) == str(unique_id)):
-                lora_list = node.get("lora_list")
-    except Exception as e:
-        print(f"Failed to load LoRA-List from extra_pnginfo: {e}")
-    
-    # extra_pnginfoから取得したlora_listが空の場合、JSON形式のlora_listから取得を試みる
-    if not lora_list:
-        try:
-            lora_list = json.loads(lora_list_str)
-        except Exception as e:
-            print(f"Failed to load LoRA-List from JSON string: {e}")
-    
-    # lora_list = [lora for lora in lora_list if lora.get("enabled")]
+    lora_list = json.loads(lora_list_str)
     for lora in lora_list:
         lora["lora"] = str(Path(lora.get("lora"))) # パス形式を統一
     
@@ -140,122 +124,128 @@ def apply_stack(stack, model: ModelPatcher=None, clip: CLIP=None):
     return (model, clip)
 
 
+STACK = io.Custom("LORASTACK")
 
 # ===============================================
 # LoRA Stack
 # ===============================================
-class JupoLoRAStack:
+class JupoLoRAStack(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls): 
-        return {
-            "required": {}, 
-            "optional": {
-                "prev_stack": ("LORASTACK", {}),
-                "prev_trigger": Field.string(forceInput=True), 
-                "lora_list": Field.string(multiline=True), 
-            }, 
-            "hidden": {
-                "unique_id": "UNIQUE_ID",
-                "extra_pnginfo": "EXTRA_PNGINFO",
-            },
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id=mk_name("LoRA_Stack_(jupo)"), 
+            display_name="LoRA Stack (jupo)", 
+            category=category, 
+            inputs=[
+                STACK.Input("prev_stack", optional=True), 
+                io.String.Input("prev_trigger", optional=True, force_input=True), 
+                io.String.Input("lora_list", multiline=True, optional=True)
+            ], 
+            outputs=[
+                STACK.Output(display_name="stack"), 
+                io.String.Output(display_name="trigger")
+            ]
+        )
     
-    RETURN_TYPES = ("LORASTACK", IO.STRING)
-    RETURN_NAMES = ("stack", "trigger")
-    FUNCTION = "execute"
-    
-    def execute(self, prev_stack=[], prev_trigger="", unique_id=None, extra_pnginfo=None, lora_list=""):
-        stack, trigger = get_stack(unique_id, extra_pnginfo, lora_list)
+    @classmethod
+    def execute(cls, prev_stack=[], prev_trigger="", lora_list=""):
+        stack, trigger = get_stack(lora_list)
 
         stack = prev_stack + stack
         trigger = prev_trigger + trigger
         
-        return (stack, trigger)
+        return io.NodeOutput(stack, trigger)
 
 
 # ===============================================
 # LoRA Loader
 # ===============================================
-class JupoLoRALoader:
+class JupoLoRALoader(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model": Field.model(), 
-            }, 
-            "optional": {
-                "clip": Field.clip(), 
-                "prev_stack": ("LORASTACK", {}), 
-                "prev_trigger": Field.string(forceInput=True), 
-                "lora_list": Field.string(multiline=True), 
-            }, 
-            "hidden": {
-                "unique_id": "UNIQUE_ID",
-                "extra_pnginfo": "EXTRA_PNGINFO",
-            },
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id=mk_name("LoRA_Loader_(jupo)"), 
+            display_name="LoRA Loader (jupo)", 
+            category=category, 
+            inputs=[
+                io.Model.Input("model"), 
+                io.Clip.Input("clip", optional=True), 
+                STACK.Input("prev_stack", optional=True), 
+                io.String.Input("prev_trigger", optional=True), 
+                io.String.Input("lora_list", multiline=True, optional=True)
+            ], 
+            outputs=[
+                io.Model.Output(), 
+                io.Clip.Output(), 
+                io.String.Output(display_name="trigger")
+            ]
+        )
     
-    RETURN_TYPES = (IO.MODEL, IO.CLIP, IO.STRING)
-    RETURN_NAMES = ("MODEL", "CLIP", "trigger")
-    FUNCTION = "execute"
-    
-    def execute(self, model, clip=None, prev_stack=[], prev_trigger="", unique_id=None, extra_pnginfo=None, lora_list=""):
-        stack, trigger = get_stack(unique_id, extra_pnginfo, lora_list)
+    @classmethod
+    def execute(cls, model, clip=None, prev_stack=[], prev_trigger="", lora_list=""):
+        stack, trigger = get_stack(lora_list)
         stack = prev_stack + stack
         trigger = prev_trigger + trigger
         
         model, clip = apply_stack(stack, model, clip)
 
-        return (model, clip, trigger)
+        return io.NodeOutput(model, clip, trigger)
         
 
 
 # ===============================================
 # Apply LoRA Stack
 # ===============================================
-class ApplyLoRAStack:
+class ApplyLoRAStack(io.ComfyNode):
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model": Field.model(), 
-            }, 
-            "optional": {
-                "clip": Field.clip(), 
-                "stack": ("LORASTACK", {})
-            }
-        }
+    def define_schema(cls):
+        return io.Schema(
+            node_id=mk_name("Apply_LoRA_Stack"), 
+            display_name="Apply LoRA Stack", 
+            category=category, 
+            inputs=[
+                io.Model.Input("model"), 
+                io.Clip.Input("clip", optional=True), 
+                STACK.Input("stack", optional=True)
+            ], 
+            outputs=[
+                io.Model.Output(), 
+                io.Clip.Output()
+            ]
+        )
     
-    RETURN_TYPES = (IO.MODEL, IO.CLIP)
-    FUNCTION = "execute"
-
-    def execute(self, model, clip=None, stack=[]):
+    @classmethod
+    def execute(cls, model, clip=None, stack=[]):
         model, clip = apply_stack(stack, model, clip)
 
-        return (model, clip)
+        return io.NodeOutput(model, clip)
 
 
 
 # ===============================================
 # Stack to WanVideo Wrapper
 # ===============================================
-class StackToWanWrapper:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "stack": ("LORASTACK", {}), 
-            }, 
-            "optional": {
-                "low_mem_load": Field.boolean(default=False), 
-                "merge_loras": Field.boolean(default=True), 
-            }
-        }
-    
-    RETURN_TYPES = ("WANVIDLORA", )
-    FUNCTION = "execute"
+WANLORA = io.Custom("WANVIDEOLORA")
 
-    def execute(self, stack: list, low_mem_load=False, merge_loras=True):
+class StackToWanWrapper(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id=mk_name("Stack_to_WanWrapper"), 
+            display_name="Stack to WanWrapper", 
+            category=category, 
+            inputs=[
+                STACK.Input("stack"), 
+                io.Boolean.Input("low_mem_load", default=False), 
+                io.Boolean.Input("merge_loras", default=True)
+            ], 
+            outputs=[
+                WANLORA.Output()
+            ]
+        )
+    
+    @classmethod
+    def execute(cls, stack: list, low_mem_load=False, merge_loras=True):
         loras_list = []
         available_loras = get_available_loras(stack)
 
@@ -286,7 +276,7 @@ class StackToWanWrapper:
 
                 loras_list.append(wrapper_lora)
         
-        return (loras_list, )
+        return io.NodeOutput(loras_list)
 
 
 
