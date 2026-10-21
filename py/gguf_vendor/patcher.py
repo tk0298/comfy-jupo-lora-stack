@@ -158,4 +158,46 @@ def load_gguf_diffusion_model(path, dequant_dtype=None, patch_dtype=None, patch_
         raise RuntimeError("ERROR: Could not detect model type of: {}".format(path))
     model = GGUFModelPatcher.clone(model)
     model.patch_on_device = patch_on_device
+    _pad_memory_estimate(model)
     return model
+
+
+# [jupo] 従来の ModelPatcher のメモリ見積もりは余裕が少なく、GGUF では
+# 推論時に各レイヤーを逆量子化する一時バッファ (非同期オフロードのストリーム数ぶん) が
+# 必要になるため、16GB 級の GPU で VRAM を重みで埋め切って OOM になりやすい。
+# ComfyUI 本体が DynamicVRAM 側で行っている補正 (×1.3 + 1GB) に倣い、
+# さらに最大レイヤーの逆量子化サイズ × 3 を上乗せする。
+_MEMORY_PAD_RATIO = 1.3
+_MEMORY_PAD_BYTES = 1024 ** 3
+_DEQUANT_BUFFERS = 3
+
+
+def _largest_dequant_bytes(model_patcher) -> int:
+    largest = 0
+    try:
+        for p in model_patcher.model.diffusion_model.parameters():
+            if not is_quantized(p):
+                continue
+            shape = getattr(p, "tensor_shape", p.shape)
+            n = 1
+            for d in shape:
+                n *= int(d)
+            largest = max(largest, n)
+    except Exception:
+        return 0
+    return largest * 2  # fp16 に逆量子化
+
+
+def _pad_memory_estimate(model_patcher):
+    base_model = model_patcher.model
+    if getattr(base_model, "_jupo_gguf_mem_padded", False):
+        return
+    original = base_model.memory_required
+    extra = _MEMORY_PAD_BYTES + _largest_dequant_bytes(model_patcher) * _DEQUANT_BUFFERS
+
+    def memory_required(*args, **kwargs):
+        return original(*args, **kwargs) * _MEMORY_PAD_RATIO + extra
+
+    base_model.memory_required = memory_required
+    base_model._jupo_gguf_mem_padded = True
+    logging.info(f"[JupoGGUF] VRAM 見積もりに余裕を追加: ×{_MEMORY_PAD_RATIO} + {extra / 1024**2:.0f}MB")
