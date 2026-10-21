@@ -481,13 +481,41 @@ export class BlockWeightDialog extends BaseDialog {
         if (!this.widget) return;
 
         this.switchInput.checked = this.getWidgetValue("enabled_block", false);
-        this.modelTypeDropdown.value = this.getWidgetValue("model_type", "SD");
+
+        // model_type が未設定 (null) の場合はファイル名から自動推定する
+        let modelType = this.getWidgetValue("model_type", null);
+        if (!modelType) {
+            modelType = this._guessModelType(this.modelPath ?? this.widget?.value?.lora ?? "");
+        }
+        this.modelTypeDropdown.value = modelType;
         
         // スケジュールスライダーの値をロード
         this.scheduleSlider._startValue = this.getWidgetValue("start", 0);
         this.scheduleSlider._endValue = this.getWidgetValue("end", 1);
         
         this.updateUIState();
+    }
+
+    /**
+     * LoRAのファイルパスから model_type を推定する。
+     * 判定できなかった場合はデフォルト値 "SD" を返す。
+     * @param {string} path - LoRAファイルパスまたはファイル名
+     * @returns {string} BlockConfigs のキー名
+     */
+    _guessModelType(path) {
+        if (!path) return "SD";
+        const lower = path.replace(/\\/g, "/").toLowerCase();
+
+        // Anima 判定: ファイル名/パスに "anima" が含まれる
+        if (lower.includes("anima")) return "ANIMA";
+
+        // WAN 判定
+        if (lower.includes("wan") || lower.includes("wanvid")) return "WAN";
+
+        // FLUX 判定
+        if (lower.includes("flux")) return "FLUX";
+
+        return "SD";
     }
 
     // ------------------------------------------

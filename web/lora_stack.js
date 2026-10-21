@@ -8,6 +8,7 @@ import { PowerLoRAHeaderWidget } from "./widgets/header_widget.js";
 import { PowerLoRASpacerWidget } from "./widgets/spacer_widget.js";
 import { PowerLoRAButtonWidget } from "./widgets/button_widget.js";
 import { PowerLoRACompoundWidget } from "./widgets/lora_widget.js";
+import { installVueNodesRedrawHook } from "./widgets/base_widget.js";
 
 
 const classNames = [mk_name("LoRA_Stack_(jupo)"), mk_name("LoRA_Loader_(jupo)")];
@@ -64,6 +65,9 @@ const extension = {
         const nodeClass = nodeType.comfyClass ?? nodeData?.name;
         if (!classNames.includes(nodeClass)) return;
 
+        // Nodes 2.0 (Vue ノード) で値変更後に再描画されない問題への対策
+        installVueNodesRedrawHook(nodeType);
+
         const originalOnNodeCreated = nodeType.prototype.onNodeCreated;
         const originalSerialize = nodeType.prototype.serialize;
         const originalConfigure = nodeType.prototype.configure;
@@ -104,7 +108,7 @@ const extension = {
             const data = originalSerialize?.apply(this, arguments) || {};
 
             data.lora_list = this.widgets
-                ?.filter(widget => widget instanceof PowerLoRACompoundWidget)
+                ?.filter(widget => PowerLoRACompoundWidget.is(widget))
                 .map(widget => widget.value) ?? [];
 
             data.lora_display_mode = this.loraDisplayMode;
@@ -114,12 +118,22 @@ const extension = {
         };
 
         // ===== デシリアライズ =====
-        // 最新ComfyUI では onConfigure(data) が推奨されるが
-        // configure() オーバーライドも引き続き動作する
+        // 親の configure() は widgets_values を this.widgets に
+        // 位置/名前ベースで復元するが、動的に増減する lora ウィジェットとは
+        // 噛み合わず、後から呼ぶとカスタム復元結果を上書きしてしまう
+        // (最新ComfyUIで顕在化)。
+        // そのため widgets_values を渡さずに親を先に呼び、
+        // カスタム復元は最後に行うことで常に自前の状態を優先させる。
         nodeType.prototype.configure = function(data) {
-            // configure() は widgets を再構築する前に呼ぶ
-            // originalConfigure を先に呼ぶと widgets が上書きされる場合があるため
-            // lora_list の復元後に呼ぶ
+            const { widgets_values, ...safeData } = data || {};
+
+            let result;
+            try {
+                result = originalConfigure?.apply(this, [safeData]);
+            } catch (e) {
+                console.warn("[LoRAStack] configure() parent call failed:", e);
+            }
+
             this.clearAllWidgets();
 
             this.loraDisplayMode = data.lora_display_mode ?? "filename";
@@ -137,14 +151,7 @@ const extension = {
             this.updateLoraListValue();
             this.updateNodeSize();
 
-            // 親の configure を最後に呼ぶことで widgets の値が上書きされるのを防ぐ
-            // ただし ComfyUI のバージョンによっては問題が起きる可能性があるため try-catch
-            try {
-                const result = originalConfigure?.apply(this, arguments);
-                return result;
-            } catch (e) {
-                console.warn("[LoRAStack] configure() parent call failed:", e);
-            }
+            return result;
         };
 
         nodeType.prototype.initializeUI = function() {
@@ -228,7 +235,7 @@ const extension = {
         // ===== コンテキストメニュー =====
         nodeType.prototype.getClickedWidget = function(x, y) {
             for (const widget of (this.widgets ?? [])) {
-                if (widget instanceof PowerLoRACompoundWidget) {
+                if (PowerLoRACompoundWidget.is(widget)) {
                     if (widget.isClickedAt(x, y, this)) {
                         return widget;
                     }

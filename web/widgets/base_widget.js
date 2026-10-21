@@ -6,6 +6,43 @@ import { mk_name, mk_endpoint, api_get, api_post, loadCSS } from "../utils.js";
 import { CONSTANTS, Utils, Renderer } from "../ui.js";
 
 // ==============================================
+// Nodes 2.0 (Vue ノード) 再描画フック
+// Vue モードではカスタムウィジェットが個別の <canvas> に描画され、
+// node.setDirtyCanvas() では再描画されない (widget.triggerDraw() が必要)。
+// 他ウィジェットの値を変更しても見た目が古いまま残る
+// (例: Checkpoint Selector で複数のトグルが ON に見える) ため、
+// setDirtyCanvas() 呼び出し時にノード内の全ウィジェットを再描画する。
+// マイクロタスクに遅延させるのは、値ストアへの反映後に描画するため。
+// ==============================================
+export function installVueNodesRedrawHook(nodeType) {
+    const proto = nodeType?.prototype;
+    if (!proto || proto.__jupoRedrawHookInstalled) return;
+    proto.__jupoRedrawHookInstalled = true;
+
+    const originalSetDirtyCanvas = proto.setDirtyCanvas;
+    proto.setDirtyCanvas = function(...args) {
+        const result = originalSetDirtyCanvas?.apply(this, args);
+        this.redrawCustomWidgets?.();
+        return result;
+    };
+
+    proto.redrawCustomWidgets = function() {
+        if (this.__jupoRedrawPending) return;
+        this.__jupoRedrawPending = true;
+        queueMicrotask(() => {
+            this.__jupoRedrawPending = false;
+            for (const w of (this.widgets ?? [])) {
+                try {
+                    w?.triggerDraw?.();
+                } catch (e) {
+                    console.warn("[jupo] widget redraw failed:", e);
+                }
+            }
+        });
+    };
+}
+
+// ==============================================
 // カスタムウィジェットの基底クラス
 // ==============================================
 
@@ -30,7 +67,29 @@ export class BaseWidget {
         return clickedX && pos[1] >= bounds[1] && pos[1] <= bounds[1] + bounds[3];
     }
     
+    // ------------------------------------------
+    // Nodes 2.0 (Vue ノード) 対応
+    // Vue モードではウィジェットごとに専用の <canvas> が作られ、
+    // pointerup だけはノード全体基準の座標 (canvasX - node.pos) で渡ってくる。
+    // そのため pointerdown と座標系がずれ、クリック判定が失敗する。
+    // イベントの発生元がウィジェット専用 canvas の場合は、
+    // そのローカル座標 (offsetX/offsetY) を使う。
+    // ------------------------------------------
+    resolveEventPos(event, pos) {
+        const target = event?.target;
+        const mainCanvas = app?.canvas?.canvas;
+        if (
+            target instanceof HTMLCanvasElement &&
+            mainCanvas && target !== mainCanvas &&
+            Number.isFinite(event.offsetX) && Number.isFinite(event.offsetY)
+        ) {
+            return [event.offsetX, event.offsetY];
+        }
+        return pos;
+    }
+
     mouse(event, pos, node) {
+        pos = this.resolveEventPos(event, pos);
         if (event.type === "pointerdown") {
             return this.handlePointerDown(event, pos, node);
         } else if (event.type === "pointerup") {

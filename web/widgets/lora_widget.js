@@ -11,8 +11,14 @@ import { LoRABlockWeightDialog } from "../dialogs/lora_block_weight_dialog.js";
 // ==============================================
 
 export class PowerLoRACompoundWidget extends BaseWidget {
+    static is(w) {
+        return !!w && (w instanceof PowerLoRACompoundWidget || w.isJupoLoRAWidget === true);
+    }
+
     constructor(name = "lora_compound", options = {}) {
         super(name, "lora");
+        // 最新フロントエンドでの prototype 差し替え対策 (instanceof の代替マーカー)
+        this.isJupoLoRAWidget = true;
         this.haveMouseMovedNumber = false;
         this.haveMouseMovedClipNumber = false;
         

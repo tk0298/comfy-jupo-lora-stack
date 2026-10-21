@@ -1,4 +1,6 @@
 from .utils import Endpoint
+from .quant_utils import detect_quantization, format_label
+from .gguf_utils import list_checkpoints_with_gguf, resolve_gguf_path, is_gguf
 import folder_paths
 
 from aiohttp import web
@@ -24,7 +26,11 @@ import time
 @Endpoint.get("files/{dir}")
 async def get_files(req: web.Request):
     directory = req.match_info["dir"]
-    filename_list = folder_paths.get_filename_list(directory)
+    if directory == "checkpoints":
+        # .gguf の拡散モデル (checkpoints / diffusion_models) も選択肢に含める
+        filename_list = list_checkpoints_with_gguf()
+    else:
+        filename_list = folder_paths.get_filename_list(directory)
     
     return web.json_response(filename_list)
 
@@ -35,6 +41,8 @@ def get_fullpath(path: str):
     folder, file = path[:pos], path[pos+1:]
 
     full_path = folder_paths.get_full_path(folder, file)
+    if not full_path and folder == "checkpoints" and is_gguf(file):
+        full_path = resolve_gguf_path(file)
     return full_path
 
 
@@ -49,9 +57,27 @@ async def load_metadata(req: web.Request):
     
     start = time.time()
     try:
-        metadata = get_metadata(file_path)
+        # .gguf は safetensors ヘッダではないので読まない
+        # (先頭8バイトを巨大なヘッダサイズと誤認してファイル全体を読んでしまうため)
+        metadata = {} if is_gguf(file_path) else get_metadata(file_path)
     except:
         metadata = {}
+
+    # 量子化形式 (INT8 ConvRot / FP8 等) を検出して付加
+    try:
+        quant_info = detect_quantization(file_path)
+        if quant_info:
+            metadata = metadata or {}
+            metadata["__quantization__"] = format_label(quant_info)
+            gguf_info = quant_info.get("gguf")
+            if gguf_info:
+                if gguf_info.get("architecture"):
+                    metadata["__architecture__"] = gguf_info["architecture"]
+                if gguf_info.get("name") and not metadata.get("ss_output_name"):
+                    metadata["ss_output_name"] = gguf_info["name"]
+    except Exception as e:
+        print(f"量子化形式の検出に失敗: {e}")
+
     elapsed = time.time() - start
     print(f"メタデータ取得完了: {elapsed:.4f}秒")
     
@@ -64,7 +90,7 @@ def get_metadata(filepath):
         # 8 bytes: N, an unsigned little-endian 64-bit integer, containing the size of the header
         header_size = int.from_bytes(file.read(8), "little", signed=False)
 
-        if header_size <= 0:
+        if header_size <= 0 or header_size > 512 * 1024 * 1024:
             raise BufferError("Invalid header size")
 
         header = file.read(header_size)

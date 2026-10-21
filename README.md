@@ -13,6 +13,22 @@
 LoRAをスタック形式で読み込みます  
 以下の機能があります
 
+### INT8 ConvRot 対応
+- INT8 ConvRot / FP8 Scaled / NVFP4 等の量子化チェックポイントに対応しています
+- 量子化モデルへのLoRA適用はComfyUI標準の逆量子化パッチ経由で行われます (ComfyUI v0.27.0以降が必要)
+- 非対応バージョンのComfyUIでは明確なエラーメッセージを表示します
+- モデル情報ダイアログに量子化形式 (INT8 ConvRot等) が表示されます
+
+### GGUF (.gguf) 対応
+- Checkpoint Loader / Checkpoint Selector で `.gguf` の拡散モデル (Flux / WAN / Qwen-Image 等) を選択できます
+- `models/checkpoints` と `models/diffusion_models` (`models/unet`) の両方の `.gguf` が一覧に表示されます
+- [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) (Apache-2.0) の読み込み処理を同梱しているため、ComfyUI-GGUF のインストールは不要です (`pip install gguf` のみ必要)
+- 同梱版は ComfyUI-GGUF の既知リストにないアーキテクチャ (Krea 2 等) も ComfyUI 本体のモデル判定で読み込めます
+- GGUF には通常 CLIP / VAE が含まれないため、MODEL のみ出力されます (CLIP / VAE 出力は None)。CLIP / VAE は別のローダーで読み込んでください
+- GGUF モデルにも LoRA Stack / LBW を適用できます (ComfyUI-GGUF の逆量子化パッチ経由)
+- start / end スケジュール (Hook) は GGUF では動作保証外です
+- モデル情報ダイアログに量子化タイプ (Q8_0, Q4_K 等) とアーキテクチャが表示されます
+
 ### カスタムエクスプローラ
 - オリジナルのLoRA選択GUIを提供します
 - 設定からOFFにできます

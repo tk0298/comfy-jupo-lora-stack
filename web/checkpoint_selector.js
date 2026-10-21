@@ -6,6 +6,7 @@ import { Utils } from "./ui.js"
 import { PowerLoRASpacerWidget } from "./widgets/spacer_widget.js";
 import { PowerLoRAButtonWidget } from "./widgets/button_widget.js";
 import { PowerCheckpointCompoundWidget } from "./widgets/ckpt_widget.js";
+import { installVueNodesRedrawHook } from "./widgets/base_widget.js";
 
 const classNames = [mk_name("Checkpoint_Selector_(jupo)")];
 
@@ -47,6 +48,9 @@ const extension = {
     beforeRegisterNodeDef: async function(nodeType, nodeData, app) {
         const nodeClass = nodeType.comfyClass ?? nodeData?.name;
         if (!classNames.includes(nodeClass)) return;
+
+        // Nodes 2.0 (Vue ノード) で他ウィジェットのトグルが再描画されない問題への対策
+        installVueNodesRedrawHook(nodeType);
 
         // --------------------------------------
         // onNodeCreated
@@ -154,11 +158,12 @@ const extension = {
             const checkpointWidget = this.widgets?.find(w => w.name === "checkpoint");
             if (checkpointWidget) {
                 const enabledWidget = this.widgets
-                    .filter(w => w instanceof PowerCheckpointCompoundWidget)
+                    .filter(w => PowerCheckpointCompoundWidget.is(w))
                     .find(w => w.value.enabled);
                 const value = enabledWidget?.value ?? {};
                 checkpointWidget.value = JSON.stringify(value);
             }
+            this.redrawCustomWidgets?.();
         };
 
 
@@ -182,8 +187,41 @@ const extension = {
         // --------------------------------------
         nodeType.prototype.disableAllWidgets = function() {
             this.widgets?.forEach(w => {
-                if (w instanceof PowerCheckpointCompoundWidget) w.value.enabled = false;
+                if (PowerCheckpointCompoundWidget.is(w) && w.value?.enabled) {
+                    w.updateValue({ enabled: false });
+                }
             });
+            this.updateCheckpointValue();
+        };
+
+
+        // --------------------------------------
+        // selectCheckpointWidget
+        // 指定ウィジェットだけを有効化する (ラジオ動作)
+        // --------------------------------------
+        nodeType.prototype.selectCheckpointWidget = function(target) {
+            (this.widgets ?? []).forEach(w => {
+                if (!PowerCheckpointCompoundWidget.is(w)) return;
+                const shouldEnable = (w === target);
+                if (!!w.value?.enabled !== shouldEnable) {
+                    w.updateValue({ enabled: shouldEnable });
+                }
+            });
+            this.updateCheckpointValue();
+            this.setDirtyCanvas?.(true, true);
+        };
+
+
+        // --------------------------------------
+        // normalizeSelection
+        // 複数が有効になっている壊れた状態を修復 (先頭の1つだけ残す)
+        // --------------------------------------
+        nodeType.prototype.normalizeSelection = function() {
+            const enabled = (this.widgets ?? [])
+                .filter(w => PowerCheckpointCompoundWidget.is(w) && w.value?.enabled);
+            if (enabled.length > 1) {
+                this.selectCheckpointWidget(enabled[0]);
+            }
         };
 
 
@@ -195,8 +233,8 @@ const extension = {
             const data = originalSerialize?.apply(this, arguments) || {};
 
             data.widgetValues = (this.widgets ?? [])
-                .filter(w => w instanceof PowerCheckpointCompoundWidget)
-                .map(w => w.value);
+                .filter(w => PowerCheckpointCompoundWidget.is(w))
+                .map(w => ({ ...w.value }));
             
             data.displayMode = this.displayMode;
 
@@ -206,11 +244,24 @@ const extension = {
 
         // --------------------------------------
         // configure
-        // 最新ComfyUIでは originalConfigure を先に呼ぶと widgets が
-        // 上書きされるため、カスタム復元後に try-catch で呼ぶ
+        // 親の configure() は widgets_values を this.widgets に
+        // 位置/名前ベースで復元するが、動的に増減する checkpoint
+        // ウィジェットとは噛み合わず、後から呼ぶとカスタム復元結果を
+        // 上書きしてしまう (最新ComfyUIで顕在化)。
+        // そのため widgets_values を渡さずに親を先に呼び、
+        // カスタム復元は最後に行うことで常に自前の状態を優先させる。
         // --------------------------------------
         const originalConfigure = nodeType.prototype.configure;
         nodeType.prototype.configure = function(data) {
+            const { widgets_values, ...safeData } = data || {};
+
+            let result;
+            try {
+                result = originalConfigure?.apply(this, [safeData]);
+            } catch (e) {
+                console.warn("[CheckpointSelector] configure() parent call failed:", e);
+            }
+
             this.clearAllWidgets();
             this.displayMode = data.displayMode || "filename";
             this.initializeUI();
@@ -218,18 +269,15 @@ const extension = {
             if (data.widgetValues && Array.isArray(data.widgetValues)) {
                 data.widgetValues.forEach(value => {
                     const widget = this.addCheckpointWidget(value.path);
-                    widget.value = value;
+                    widget.value = { ...value };
                 });
             }
 
+            this.normalizeSelection();
             this.updateCheckpointValue();
             this.updateNodeSize();
 
-            try {
-                return originalConfigure?.apply(this, arguments);
-            } catch (e) {
-                console.warn("[CheckpointSelector] configure() parent call failed:", e);
-            }
+            return result;
         };
 
 
@@ -239,7 +287,7 @@ const extension = {
         // --------------------------------------
         nodeType.prototype.getClickedWidget = function(x, y) {
             for (const widget of (this.widgets ?? [])) {
-                if (widget instanceof PowerCheckpointCompoundWidget) {
+                if (PowerCheckpointCompoundWidget.is(widget)) {
                     if (widget.isClickedAt(x, y, this)) {
                         return widget;
                     }

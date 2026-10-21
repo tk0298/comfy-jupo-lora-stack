@@ -67,8 +67,16 @@ export function customize(widget) {
 // Checkpointコンパウンドウィジェット
 // ==============================================
 export class PowerCheckpointCompoundWidget extends BaseWidget {
+    static is(w) {
+        return !!w && (w instanceof PowerCheckpointCompoundWidget || w.isJupoCheckpointWidget === true);
+    }
+
     constructor(name = "checkpoint_compound", options = {}) {
         super(name, "checkpoint");
+        // 最新ComfyUIフロントエンドは node.widgets 内のウィジェットを LegacyWidget に
+        // 変換 (prototype 差し替え) するため instanceof が効かなくなる。
+        // 判定用のマーカーを自前で持たせる。
+        this.isJupoCheckpointWidget = true;
 
         const { deleteCallback, valueChangedCallback, ...valueOptions} = options;
         this.deleteCallback = deleteCallback;
@@ -123,18 +131,28 @@ export class PowerCheckpointCompoundWidget extends BaseWidget {
     // ------------------------------------------
     // イベントハンドラ
     // ------------------------------------------
+    // 値を「新しいオブジェクトの代入」で更新する。
+    // 最新ComfyUIフロントエンドではウィジェット値がストア管理される場合があり、
+    // this.value.xxx = ... のような破壊的変更が反映されないため。
+    updateValue(patch) {
+        this.value = { ...this.value, ...patch };
+    }
+
     onToggleClick(event, pos, node) {
-        // 既に有効の場合はなにもしない
-        if (this.value.enabled) return;
-
-        // 全部のウィジェットを無効化
-        node.widgets.forEach(w => {
-            if (w instanceof this.constructor) w.value.enabled = false;
-        });
-
-        this.value.enabled = true;
-        this.valueChangedCallback?.();
         this.cancelMouseDown();
+
+        if (typeof node?.selectCheckpointWidget === "function") {
+            node.selectCheckpointWidget(this);
+        } else {
+            // フォールバック: 自分だけを有効化 (ラジオ動作)
+            (node?.widgets ?? []).forEach(w => {
+                if (PowerCheckpointCompoundWidget.is(w) && w !== this && w.value?.enabled) {
+                    w.updateValue({ enabled: false });
+                }
+            });
+            if (!this.value.enabled) this.updateValue({ enabled: true });
+        }
+
         node?.setDirtyCanvas?.(true, true);
         return true;
     }
@@ -142,8 +160,8 @@ export class PowerCheckpointCompoundWidget extends BaseWidget {
     onNameClick(event, pos, node) {
 
         Utils.showCheckpointChooser(event, this.value.path, (selected) => {
-            this.value.path = selected;
-            this.valueChangedCallback?.();
+            this.updateValue({ path: selected });
+            node?.updateCheckpointValue?.();
             node?.setDirtyCanvas?.(true, true);
         });
 
@@ -253,7 +271,7 @@ export class PowerCheckpointCompoundWidget extends BaseWidget {
     }
 
     showContextMenu(event, node) {
-        const checkpointWidgets = node.widgets.filter(w => w instanceof PowerCheckpointCompoundWidget);
+        const checkpointWidgets = node.widgets.filter(w => PowerCheckpointCompoundWidget.is(w));
         const widgetIndex = checkpointWidgets.indexOf(this);
         const canMoveUp = widgetIndex > 0;
         const canMoveDown = widgetIndex < checkpointWidgets.length - 1;
@@ -271,7 +289,8 @@ export class PowerCheckpointCompoundWidget extends BaseWidget {
                 content: "✏️ 表示名を設定",
                 callback: () => {
                     app.canvas.prompt("表示名を入力", this.value.display_name || "", (v) => {
-                        this.value.display_name = v || null;
+                        this.updateValue({ display_name: v || null });
+                        node?.updateCheckpointValue?.();
                         node?.setDirtyCanvas?.(true, true);
                     }, event);
                 }
@@ -339,4 +358,4 @@ export class PowerCheckpointCompoundWidget extends BaseWidget {
 
         node?.setDirtyCanvas?.(true, true);
     }
-}
+}
