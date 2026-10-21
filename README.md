@@ -22,7 +22,8 @@ LoRAをスタック形式で読み込みます
 ### GGUF (.gguf) 対応
 - Checkpoint Loader / Checkpoint Selector で `.gguf` の拡散モデル (Flux / WAN / Qwen-Image 等) を選択できます
 - `models/checkpoints` と `models/diffusion_models` (`models/unet`) の両方の `.gguf` が一覧に表示されます
-- ロードには [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) が必要です (未インストール時は明確なエラーを表示します)
+- [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) (Apache-2.0) の読み込み処理を同梱しているため、ComfyUI-GGUF のインストールは不要です (`pip install gguf` のみ必要)
+- 同梱版は ComfyUI-GGUF の既知リストにないアーキテクチャ (Krea 2 等) も ComfyUI 本体のモデル判定で読み込めます
 - GGUF には通常 CLIP / VAE が含まれないため、MODEL のみ出力されます (CLIP / VAE 出力は None)。CLIP / VAE は別のローダーで読み込んでください
 - GGUF モデルにも LoRA Stack / LBW を適用できます (ComfyUI-GGUF の逆量子化パッチ経由)
 - start / end スケジュール (Hook) は GGUF では動作保証外です

@@ -3,13 +3,12 @@ GGUF (.gguf) モデル対応ユーティリティ。
 
 - Checkpoint Loader / Selector から .gguf の拡散モデル (UNet / DiT) を選択できるよう、
   checkpoints フォルダと diffusion_models (unet) フォルダの .gguf を一覧化する。
-- 実際のロードは ComfyUI-GGUF (city96) の UnetLoaderGGUF を利用する。
+- 実際のロードは同梱した ComfyUI-GGUF (city96) のコア (py/gguf_vendor) で行う。
   ComfyUI 本体は GGUF のテンソル (GGMLTensor) と逆量子化オペレータを持たないため。
 - モデル情報ダイアログ用に、GGUF ヘッダ (KV + テンソル情報) だけを読んで
   アーキテクチャと量子化タイプを高速に取得する (テンソル本体は読まない)。
 """
 
-import contextlib
 import logging
 import os
 import struct
@@ -96,68 +95,30 @@ def resolve_checkpoint_path(name: str):
 
 
 # ===============================================
-# ロード (ComfyUI-GGUF 経由)
+# ロード (同梱の ComfyUI-GGUF コア: py/gguf_vendor)
 # ===============================================
-
-_GGUF_LOADER_CLASS = "UnetLoaderGGUF"
-
-
-def _get_gguf_loader_class():
-    try:
-        import nodes
-        return nodes.NODE_CLASS_MAPPINGS.get(_GGUF_LOADER_CLASS)
-    except Exception:
-        return None
-
-
-def gguf_loader_available() -> bool:
-    return _get_gguf_loader_class() is not None
-
-
-@contextlib.contextmanager
-def _redirect_unet_path(name: str, full_path: str):
-    """
-    UnetLoaderGGUF は folder_paths.get_full_path("unet", name) でパスを解決するため、
-    checkpoints フォルダ等に置かれた .gguf も読めるよう、この名前に限り
-    解決結果を差し替える。ComfyUI のノード実行は単一スレッドなので安全。
-    """
-    original = folder_paths.get_full_path
-
-    def patched(folder_name, filename):
-        if filename == name and folder_name in ("unet", "diffusion_models", "unet_gguf"):
-            return full_path
-        return original(folder_name, filename)
-
-    folder_paths.get_full_path = patched
-    try:
-        yield
-    finally:
-        folder_paths.get_full_path = original
-
 
 def load_gguf_unet(name: str):
     """
     .gguf 拡散モデルをロードして MODEL (GGUFModelPatcher) を返す。
     GGUF ファイルには通常 CLIP / VAE が含まれないため MODEL のみ。
+    ComfyUI-GGUF のロード処理を同梱しているので、別途インストールは不要
+    (pip の gguf パッケージのみ必要)。
     """
-    loader_cls = _get_gguf_loader_class()
-    if loader_cls is None:
-        raise RuntimeError(
-            f"GGUF モデル ({name}) を読み込むには ComfyUI-GGUF "
-            "(https://github.com/city96/ComfyUI-GGUF) のインストールが必要です。"
-        )
-
     full_path = resolve_gguf_path(name)
     if not full_path:
         raise FileNotFoundError(f"GGUF モデルが見つかりません: {name}")
 
-    loader = loader_cls()
-    func = getattr(loader, getattr(loader_cls, "FUNCTION", "load_unet"))
+    try:
+        import gguf  # noqa: F401
+    except ImportError:
+        raise RuntimeError(
+            f"GGUF モデル ({name}) を読み込むには Python パッケージ gguf が必要です。"
+            "ComfyUI の Python で `python -m pip install gguf` を実行してから ComfyUI を再起動してください。"
+        )
 
-    with _redirect_unet_path(name, full_path):
-        out = func(unet_name=name)
-
-    return out[0]
+    from .gguf_vendor.patcher import load_gguf_diffusion_model
+    return load_gguf_diffusion_model(full_path)
 
 
 def model_is_gguf(model_patcher) -> bool:
