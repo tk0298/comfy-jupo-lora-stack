@@ -3,6 +3,7 @@ from .lora_block_weight import LBWLoRALoader
 from .checkpoint_loader import _suppress_anima_posembed_warnings, _is_anima_checkpoint
 from .quant_utils import model_is_quantized, comfy_supports_layer_quant
 from .lora_compat import resolve_loaded_patches
+from .gguf_utils import model_is_gguf
 import contextlib
 
 # Anima 以外のLoRAでは何もしないダミーコンテキスト
@@ -138,7 +139,13 @@ def apply_stack(stack, model: ModelPatcher = None, clip: CLIP = None):
                 "[LoRAStack] 量子化モデル (INT8 ConvRot 等) を検出: "
                 "LoRA は逆量子化パッチ経由で適用されます"
             )
-        
+
+    # GGUF モデル (ComfyUI-GGUF) の場合、LoRA は GGUFModelPatcher により
+    # 推論時に逆量子化したウェイトへ適用される
+    model_gguf = model_is_gguf(model)
+    if model_gguf and any(v.get("enabled", False) for v in available_loras):
+        logging.info("[LoRAStack] GGUF モデルを検出: LoRA は ComfyUI-GGUF の逆量子化パッチ経由で適用されます")
+
     for value in available_loras:
         enabled = value.get("enabled", False)
         file = value.get("lora", "")
@@ -174,6 +181,12 @@ def apply_stack(stack, model: ModelPatcher = None, clip: CLIP = None):
                 logging.info(
                     f"[LoRAStack] 量子化モデルで start/end スケジュールを使用: {file} "
                     "(ステップ毎に逆量子化・再量子化が発生するため速度が低下する場合があります)"
+                )
+            if model_gguf:
+                logging.warning(
+                    f"[LoRAStack] GGUF モデルで start/end スケジュールを使用: {file} "
+                    "(Hook による LoRA 適用は ComfyUI-GGUF 側で正式サポートされていないため、"
+                    "効かない・エラーになる場合は start=0, end=1 にしてください)"
                 )
             with _suppress_anima_posembed_warnings() if _is_anima else _null_context():
                 prev_hooks = LBWLoRALoader().load_lora_with_hook(

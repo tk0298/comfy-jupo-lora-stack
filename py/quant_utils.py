@@ -63,6 +63,18 @@ def detect_quantization(filepath: str) -> dict | None:
     """
     if not filepath or not os.path.isfile(filepath):
         return None
+    if filepath.lower().endswith(".gguf"):
+        from .gguf_utils import read_gguf_info
+        gguf_info = read_gguf_info(filepath)
+        if gguf_info is None:
+            return None
+        return {
+            "formats": set(),
+            "gguf": gguf_info,
+            "convrot": False,
+            "convrot_groupsize": None,
+            "num_layers": 0,
+        }
     if not filepath.lower().endswith((".safetensors", ".sft")):
         return None
 
@@ -142,6 +154,10 @@ def format_label(info: dict | None) -> str:
     """検出結果を表示用ラベルに変換する。"""
     if not info:
         return ""
+
+    if info.get("gguf") is not None:
+        from .gguf_utils import format_gguf_label
+        return format_gguf_label(info["gguf"])
 
     formats = info.get("formats", set())
     labels = []

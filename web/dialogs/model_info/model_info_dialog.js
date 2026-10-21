@@ -253,6 +253,11 @@ export class ModelInfoDialog extends BaseDialog {
         if (data.__quantization__) {
             this.metadataSection.addItem("量子化形式", data.__quantization__);
         }
+
+        // GGUF のアーキテクチャ (general.architecture)
+        if (data.__architecture__) {
+            this.metadataSection.addItem("アーキテクチャ", data.__architecture__);
+        }
     }
 
     // --- civitai

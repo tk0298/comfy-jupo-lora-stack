@@ -5,6 +5,12 @@ from .quant_utils import (
     is_int8_convrot,
     comfy_supports_layer_quant,
 )
+from .gguf_utils import (
+    is_gguf,
+    load_gguf_unet,
+    list_checkpoints_with_gguf,
+    resolve_checkpoint_path,
+)
 from nodes import CheckpointLoaderSimple
 import folder_paths
 import json
@@ -97,7 +103,7 @@ def _check_quantized_checkpoint(ckpt_name: str):
     明確なエラーを出す。
     """
     try:
-        full_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+        full_path = resolve_checkpoint_path(ckpt_name)
     except Exception:
         full_path = None
 
@@ -135,8 +141,12 @@ def _load_checkpoint_auto(path: str):
     CheckpointLoaderSimple でロードする。
     INT8 ConvRot 等の量子化モデルは検出してログ出力し、
     非対応の ComfyUI では明確なエラーを出す。
+    .gguf は ComfyUI-GGUF 経由で拡散モデルのみをロードし、CLIP / VAE は None を返す。
     """
     _check_quantized_checkpoint(path)
+
+    if is_gguf(path):
+        return _load_gguf_checkpoint(path)
 
     if _is_anima_checkpoint(path):
         logging.info(f"[JupoCheckpoint] Anima チェックポイントを検出: {path}")
@@ -150,6 +160,21 @@ def _load_checkpoint_auto(path: str):
     return loader.load_checkpoint(path)
 
 
+def _load_gguf_checkpoint(path: str):
+    """
+    .gguf 拡散モデルをロードする。GGUF には通常 CLIP / VAE が含まれないため
+    (MODEL, None, None) を返す。CLIP / VAE は別途ローダーで読み込むこと。
+    """
+    logging.info(f"[JupoCheckpoint] GGUF モデルを検出: {path}")
+    with _suppress_anima_posembed_warnings() if _is_anima_checkpoint(path) else contextlib.nullcontext():
+        model = load_gguf_unet(path)
+    logging.info(
+        "[JupoCheckpoint] GGUF は拡散モデルのみを含むため CLIP / VAE は出力されません。"
+        "CLIP / VAE は別のローダーで読み込んでください"
+    )
+    return (model, None, None)
+
+
 # ===============================================
 # Checkpoint Loader
 # ===============================================
@@ -159,7 +184,7 @@ class JupoCheckpointLoader:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "ckpt_name": Field.combo(folder_paths.get_filename_list("checkpoints")),
+                "ckpt_name": Field.combo(list_checkpoints_with_gguf()),
             },
         }
 
