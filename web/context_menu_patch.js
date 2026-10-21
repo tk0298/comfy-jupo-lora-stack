@@ -2,6 +2,8 @@ import { app } from "../../scripts/app.js";
 
 // ----------------------------------------------
 // コンテキストメニューパッチ
+// 最新ComfyUIでは node.constructor.comfyClass の代わりに
+// node.type も使用できる (両方を確認)
 // ----------------------------------------------
 
 export function applyContextMenuPatch(classNames) {
@@ -11,7 +13,9 @@ export function applyContextMenuPatch(classNames) {
 
     canvasPrototype.processContextMenu = function(node, e) {
         // 対象ノードかチェック
-        if (node && classNames.includes(node.constructor.comfyClass)) {
+        // 最新ComfyUI: node.type または node.constructor.comfyClass で判定
+        const nodeClass = node?.type ?? node?.constructor?.comfyClass;
+        if (node && nodeClass && classNames.includes(nodeClass)) {
             const canvas_pos = this.convertEventToCanvasOffset(e);
             const mouse_pos = [canvas_pos[0] - node.pos[0], canvas_pos[1] - node.pos[1]];
 
@@ -25,5 +29,5 @@ export function applyContextMenuPatch(classNames) {
 
         // 条件に合わない場合は、デフォルトのコンテキストメニュー
         return orig_processContextMenu?.apply(this, arguments);
-    }
+    };
 }

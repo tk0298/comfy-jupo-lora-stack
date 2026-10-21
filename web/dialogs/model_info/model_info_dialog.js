@@ -248,6 +248,11 @@ export class ModelInfoDialog extends BaseDialog {
         const data = this.dataManager.metadata;
         this.metadataSection.addItem("名前", data.ss_output_name);
         this.metadataSection.addItem("学習元モデル", data.ss_sd_model_name);
+
+        // 量子化形式 (INT8 ConvRot / FP8 等)
+        if (data.__quantization__) {
+            this.metadataSection.addItem("量子化形式", data.__quantization__);
+        }
     }
 
     // --- civitai

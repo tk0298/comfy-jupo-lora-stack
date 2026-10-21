@@ -11,8 +11,14 @@ import { LoRABlockWeightDialog } from "../dialogs/lora_block_weight_dialog.js";
 // ==============================================
 
 export class PowerLoRACompoundWidget extends BaseWidget {
+    static is(w) {
+        return !!w && (w instanceof PowerLoRACompoundWidget || w.isJupoLoRAWidget === true);
+    }
+
     constructor(name = "lora_compound", options = {}) {
         super(name, "lora");
+        // 最新フロントエンドでの prototype 差し替え対策 (instanceof の代替マーカー)
+        this.isJupoLoRAWidget = true;
         this.haveMouseMovedNumber = false;
         this.haveMouseMovedClipNumber = false;
         
@@ -138,7 +144,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
                 content: `${this.value.enabled ? "🔴" : "🟢"} ${this.value.enabled ? "無効化" : "有効化"}`,
                 callback: () => {
                     this.value.enabled = !this.value.enabled;
-                    node.setDirtyCanvas(true, true);
+                    node?.setDirtyCanvas?.(true, true);
                 }
             },
             null, // セパレータ
@@ -147,7 +153,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
                 callback: () => {
                     app.canvas.prompt("表示名を入力", this.value.display_name || "", (v) => {
                         this.value.display_name = v || null;
-                        node.setDirtyCanvas(true, true);
+                        node?.setDirtyCanvas?.(true, true);
                     }, event);
                 }
             },
@@ -156,7 +162,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
                 callback: () => {
                     // 表示モードを切り替え
                     node.loraDisplayMode = node.loraDisplayMode === 'full' ? 'filename' : 'full';
-                    node.setDirtyCanvas(true, true);
+                    node?.setDirtyCanvas?.(true, true);
                 }
             },
             null, // セパレータ
@@ -168,7 +174,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
                     const isIndividual = node.clipSettingMode === 'individual';
                     node.loraWidgets.forEach(w => w.value.clip_mode = isIndividual);
                     node.updateNodeSize();
-                    node.setDirtyCanvas(true, true);
+                    node?.setDirtyCanvas?.(true, true);
                 }
             },
             null, // セパレータ
@@ -225,7 +231,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
         [node.widgets[currentWidgetIndex], node.widgets[targetWidgetIndex]] = 
         [node.widgets[targetWidgetIndex], node.widgets[currentWidgetIndex]];
         
-        node.setDirtyCanvas(true, true);
+        node?.setDirtyCanvas?.(true, true);
     }
 
     /**
@@ -245,7 +251,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
         [node.widgets[currentWidgetIndex], node.widgets[targetWidgetIndex]] = 
         [node.widgets[targetWidgetIndex], node.widgets[currentWidgetIndex]];
         
-        node.setDirtyCanvas(true, true);
+        node?.setDirtyCanvas?.(true, true);
     }
     
     // =============================================
@@ -373,7 +379,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
         this.value.enabled = !this.value.enabled;
         this.valueChangedCallback?.();
         this.cancelMouseDown();
-        node.setDirtyCanvas(true, true);
+        node?.setDirtyCanvas?.(true, true);
         return true;
     }
     
@@ -382,7 +388,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
         Utils.showLoRAChooser(event, this.value.lora, (selectedLora) => {
             this.value.lora = selectedLora;
             this.valueChangedCallback?.();
-            node.setDirtyCanvas(true, true);
+            node?.setDirtyCanvas?.(true, true);
         });
         
         this.cancelMouseDown();
@@ -397,7 +403,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
             if (!isNaN(num)) {
                 this.value.strength_model = Math.round(num * 100) / 100;
                 this.valueChangedCallback?.();
-                node.setDirtyCanvas(true, true);
+                node?.setDirtyCanvas?.(true, true);
             }
         }, event);
         return true;
@@ -410,7 +416,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
             const newValue = this.value.strength_model + event.deltaX * CONSTANTS.DRAG_SENSITIVITY;
             this.value.strength_model = Math.round(newValue * 100) / 100;
             this.valueChangedCallback?.();
-            node.setDirtyCanvas(true, true);
+            node?.setDirtyCanvas?.(true, true);
         }
         return true;
     }
@@ -418,14 +424,14 @@ export class PowerLoRACompoundWidget extends BaseWidget {
     onStrengthDecrease(event, pos, node) {
         this.value.strength_model = Math.round((this.value.strength_model - CONSTANTS.STEP_SIZE) * 100) / 100;
         this.valueChangedCallback?.();
-        node.setDirtyCanvas(true, true);
+        node?.setDirtyCanvas?.(true, true);
         return true;
     }
     
     onStrengthIncrease(event, pos, node) {
         this.value.strength_model = Math.round((this.value.strength_model + CONSTANTS.STEP_SIZE) * 100) / 100;
         this.valueChangedCallback?.();
-        node.setDirtyCanvas(true, true);
+        node?.setDirtyCanvas?.(true, true);
         return true;
     }
 
@@ -437,7 +443,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
             if (!isNaN(num)) {
                 this.value.strength_clip = Math.round(num * 100) / 100;
                 this.valueChangedCallback?.();
-                node.setDirtyCanvas(true, true);
+                node?.setDirtyCanvas?.(true, true);
             }
         }, event);
         return true;
@@ -450,7 +456,7 @@ export class PowerLoRACompoundWidget extends BaseWidget {
             const newValue = this.value.strength_clip + event.deltaX * CONSTANTS.DRAG_SENSITIVITY;
             this.value.strength_clip = Math.round(newValue * 100) / 100;
             this.valueChangedCallback?.();
-            node.setDirtyCanvas(true, true);
+            node?.setDirtyCanvas?.(true, true);
         }
         return true;
     }
@@ -458,14 +464,14 @@ export class PowerLoRACompoundWidget extends BaseWidget {
     onClipStrengthDecrease(event, pos, node) {
         this.value.strength_clip = Math.round((this.value.strength_clip - CONSTANTS.STEP_SIZE) * 100) / 100;
         this.valueChangedCallback?.();
-        node.setDirtyCanvas(true, true);
+        node?.setDirtyCanvas?.(true, true);
         return true;
     }
 
     onClipStrengthIncrease(event, pos, node) {
         this.value.strength_clip = Math.round((this.value.strength_clip + CONSTANTS.STEP_SIZE) * 100) / 100;
         this.valueChangedCallback?.();
-        node.setDirtyCanvas(true, true);
+        node?.setDirtyCanvas?.(true, true);
         return true;
     }
     

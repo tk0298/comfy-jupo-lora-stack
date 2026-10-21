@@ -1,15 +1,48 @@
 from .utils import Field, IO
 from .lora_block_weight import LBWLoRALoader
-from nodes import LoraLoader
+from .checkpoint_loader import _suppress_anima_posembed_warnings, _is_anima_checkpoint
+from .quant_utils import model_is_quantized, comfy_supports_layer_quant
+from .lora_compat import resolve_loaded_patches
+import contextlib
+
+# Anima 以外のLoRAでは何もしないダミーコンテキスト
+_null_context = contextlib.nullcontext
 
 import folder_paths
 from comfy.model_patcher import ModelPatcher
 from comfy.sd import CLIP
 import comfy.hooks
+import comfy.utils
 import os
 from pathlib import Path
 import json
 import logging
+
+
+def _load_lora_plain(model: ModelPatcher, clip: CLIP, file: str, strength_model: float, strength_clip: float):
+    """
+    通常(LBW/schedule未使用)のLoRA適用。
+    ComfyUI標準の LoraLoader と基本的に同じ処理だが、本体のキー変換テーブルで
+    一致するキーが極端に少ない場合 (MiniMax H3 等、本体が未対応のアーキテクチャで
+    生の state_dict キー名を使う LoRA など) に、モデルの state_dict から生成した
+    フォールバック対応表を併用してキーを解決する。
+    """
+    if strength_model == 0 and strength_clip == 0:
+        return (model, clip)
+
+    lora_path = folder_paths.get_full_path_or_raise("loras", file)
+    lora_sd = comfy.utils.load_torch_file(lora_path, safe_load=True)
+
+    loaded, _used_fallback, _model_key_map = resolve_loaded_patches(
+        lora_sd, model, clip, context_label=file
+    )
+
+    if model is not None:
+        model.add_patches(loaded, strength_model)
+    if clip is not None:
+        clip.patcher.add_patches(loaded, strength_clip)
+
+    return (model, clip)
 
 
 def get_available_loras(stack: list) -> list:
@@ -90,6 +123,21 @@ def apply_stack(stack, model: ModelPatcher = None, clip: CLIP = None):
     
     model = model.clone() if model else None
     clip = clip.clone() if clip else None
+
+    # INT8 ConvRot 等の量子化モデル判定
+    # (LoRA は ComfyUI v0.27.0 以降で逆量子化パッチ経由でネイティブに適用される)
+    model_quantized = model_is_quantized(model)
+    if model_quantized:
+        if not comfy_supports_layer_quant():
+            raise RuntimeError(
+                "[LoRAStack] 量子化モデル (INT8 ConvRot 等) への LoRA 適用には "
+                "ComfyUI v0.27.0 以降が必要です。ComfyUI を更新してください。"
+            )
+        if any(v.get("enabled", False) for v in available_loras):
+            logging.info(
+                "[LoRAStack] 量子化モデル (INT8 ConvRot 等) を検出: "
+                "LoRA は逆量子化パッチ経由で適用されます"
+            )
         
     for value in available_loras:
         enabled = value.get("enabled", False)
@@ -118,35 +166,46 @@ def apply_stack(stack, model: ModelPatcher = None, clip: CLIP = None):
         if not enabled_lbw:
             lbw = {}
         
+        # Anima LoRA の場合は pos_embedder 警告を抑制するコンテキストを使用
+        _is_anima = _is_anima_checkpoint(file)
+
         if start > 0 or end < 1:
-            prev_hooks = LBWLoRALoader().load_lora_with_hook(
-                model, 
-                clip, 
-                file, 
-                strength_model, 
-                strength_clip, 
-                lbw, 
-                start, 
-                end, 
-                prev_hooks
-            )
+            if model_quantized:
+                logging.info(
+                    f"[LoRAStack] 量子化モデルで start/end スケジュールを使用: {file} "
+                    "(ステップ毎に逆量子化・再量子化が発生するため速度が低下する場合があります)"
+                )
+            with _suppress_anima_posembed_warnings() if _is_anima else _null_context():
+                prev_hooks = LBWLoRALoader().load_lora_with_hook(
+                    model, 
+                    clip, 
+                    file, 
+                    strength_model, 
+                    strength_clip, 
+                    lbw, 
+                    start, 
+                    end, 
+                    prev_hooks
+                )
         elif enabled_lbw:
-            model, clip = LBWLoRALoader().load_lora(
-                model, 
-                clip, 
-                file, 
-                strength_model, 
-                strength_clip, 
-                lbw, 
-            )
+            with _suppress_anima_posembed_warnings() if _is_anima else _null_context():
+                model, clip = LBWLoRALoader().load_lora(
+                    model, 
+                    clip, 
+                    file, 
+                    strength_model, 
+                    strength_clip, 
+                    lbw, 
+                )
         else:
-            model, clip = LoraLoader().load_lora(
-                model, 
-                clip, 
-                file, 
-                strength_model, 
-                strength_clip
-            )
+            with _suppress_anima_posembed_warnings() if _is_anima else _null_context():
+                model, clip = _load_lora_plain(
+                    model, 
+                    clip, 
+                    file, 
+                    strength_model, 
+                    strength_clip
+                )
     
     # Hook を適用（最新ComfyUI API対応）
     if prev_hooks is not None:
@@ -159,6 +218,16 @@ def apply_stack(stack, model: ModelPatcher = None, clip: CLIP = None):
 # ===============================================
 # Stack to Anima Wrapper
 # ===============================================
+
+# Cosmos-Predict2 DiT (Anima) チェックポイントに含まれるが
+# ComfyUI UNet マッパーが認識しない unexpected キーのプレフィックス。
+_ANIMA_POSEMBED_PREFIXES = (
+    "pos_embedder.dim_spatial_range",
+    "pos_embedder.dim_temporal_range",
+    "pos_embedder.seq",
+)
+
+
 class StackToAnimaWrapper:
     @classmethod
     def INPUT_TYPES(cls):
@@ -201,7 +270,10 @@ class StackToAnimaWrapper:
                 "blocks": {}, 
                 "layer_filter": "", 
                 "low_mem_load": low_mem_load, 
-                "merge_loras": merge_loras
+                "merge_loras": merge_loras,
+                # Anima LoRA の pos_embedder キーを除外するフラグ
+                # comfyui-anima-enhancer 側で参照される
+                "filter_pos_embedder": True,
             }
             if enabled_block and model_type == "ANIMA" and block_info:
                 wrapper_lora["blocks"] = block_info

@@ -1,4 +1,5 @@
 from .utils import Endpoint
+from .quant_utils import detect_quantization, format_label
 import folder_paths
 
 from aiohttp import web
@@ -52,6 +53,16 @@ async def load_metadata(req: web.Request):
         metadata = get_metadata(file_path)
     except:
         metadata = {}
+
+    # 量子化形式 (INT8 ConvRot / FP8 等) を検出して付加
+    try:
+        quant_info = detect_quantization(file_path)
+        if quant_info:
+            metadata = metadata or {}
+            metadata["__quantization__"] = format_label(quant_info)
+    except Exception as e:
+        print(f"量子化形式の検出に失敗: {e}")
+
     elapsed = time.time() - start
     print(f"メタデータ取得完了: {elapsed:.4f}秒")
     

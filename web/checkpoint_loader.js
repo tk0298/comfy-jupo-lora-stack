@@ -16,7 +16,8 @@ const extension = {
     }, 
 
     beforeRegisterNodeDef: async function (nodeType, nodeData, app) {
-        if (!classNames.includes(nodeType.comfyClass)) return;
+        const nodeClass = nodeType.comfyClass ?? nodeData?.name;
+        if (!classNames.includes(nodeClass)) return;
 
         // --- on Node Created -----------------------
         const origOnNodeCreated = nodeType.prototype.onNodeCreated;

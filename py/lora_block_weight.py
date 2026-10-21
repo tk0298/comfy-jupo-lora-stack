@@ -3,10 +3,50 @@ import comfy.utils
 import comfy.lora
 import comfy.lora_convert
 import comfy.hooks
+import logging
+
+from .lora_compat import build_state_dict_fallback_map, diffusion_model_arch_name
 
 # 型用
 from comfy.model_patcher import ModelPatcher
 from comfy.sd import CLIP
+
+# 本体のキー変換テーブルで一致するキーの割合がこの値未満の場合、
+# state_dict ベースのフォールバックマッピングを試みる (MiniMax H3 等対策)
+_FALLBACK_MATCH_THRESHOLD = 0.5
+
+
+# -----------------------------------------------
+# Anima LoRA ユーティリティ
+# -----------------------------------------------
+
+# Anima LoRA に含まれるが推論に不要な pos_embedder キーのプレフィックス
+_ANIMA_LORA_FILTER_PREFIXES = (
+    "pos_embedder.",
+)
+
+def _is_anima_lora(lora_name: str) -> bool:
+    """LoRAファイル名・パスから Anima LoRA かどうかを判定する"""
+    lower = lora_name.replace("\\", "/").lower()
+    return "anima" in lower
+
+def _filter_anima_lora_keys(lora: dict) -> dict:
+    """
+    Anima LoRA の pos_embedder キーをフィルタして除去する。
+    これらのキーは Anima チェックポイント固有の位置エンコーダ用ウェイトで
+    LoRA の推論には影響しない。
+    """
+    filtered = {}
+    skipped = []
+    for key in lora:
+        if any(key.startswith(prefix) for prefix in _ANIMA_LORA_FILTER_PREFIXES):
+            skipped.append(key)
+        else:
+            filtered[key] = lora[key]
+    if skipped:
+        import logging
+        logging.info(f"[LBWLoRALoader] Anima LoRA: pos_embedder キーをスキップ ({len(skipped)}個): {skipped[:3]}{'...' if len(skipped) > 3 else ''}")
+    return filtered
 
 
 # -----------------------------------------------
@@ -125,17 +165,41 @@ class LBWLoRALoader:
 
         if model is not None:
             model_key_map = comfy.lora.model_lora_keys_unet(model.model)
-            model_block_info = lbw.get("model", {})
-            model_mapped = self.mapping_block_info(model_block_info, model_key_map)
         
         if clip is not None:
             clip_key_map = comfy.lora.model_lora_keys_clip(clip.cond_stage_model)
-            clip_block_info = lbw.get("clip", {})
-            clip_mapped = self.mapping_block_info(clip_block_info, clip_key_map)
         
         key_map = model_key_map | clip_key_map
         lora = comfy.lora_convert.convert_lora(lora)
         loaded = comfy.lora.load_lora(lora, key_map)
+
+        # 本体のキー変換テーブルで一致するキーが極端に少ない場合
+        # (MiniMax H3 等、本体が未対応のアーキテクチャで生の state_dict
+        # キー名を使う LoRA など)、モデルの state_dict から生成した
+        # フォールバック対応表を model 側に限定して併用する。
+        total_entries = len(lora)
+        if model is not None and total_entries > 0 and len(loaded) / total_entries < _FALLBACK_MATCH_THRESHOLD:
+            fallback_map = build_state_dict_fallback_map(model)
+            if fallback_map:
+                merged_model_map = {**fallback_map, **model_key_map}
+                merged_key_map = merged_model_map | clip_key_map
+                loaded_fb = comfy.lora.load_lora(lora, merged_key_map)
+                if len(loaded_fb) > len(loaded):
+                    arch = diffusion_model_arch_name(model)
+                    arch_label = f" [{arch}]" if arch else ""
+                    logging.info(
+                        "[LBWLoRALoader] 本体のキー変換テーブルで一致するキーが少ないため、"
+                        f"state_dict ベースの互換マッピングを適用しました{arch_label} "
+                        f"({len(loaded)} -> {len(loaded_fb)} / {total_entries} キー一致)"
+                    )
+                    loaded = loaded_fb
+                    model_key_map = merged_model_map
+
+        model_block_info = lbw.get("model", {})
+        model_mapped = self.mapping_block_info(model_block_info, model_key_map)
+
+        clip_block_info = lbw.get("clip", {})
+        clip_mapped = self.mapping_block_info(clip_block_info, clip_key_map)
 
         return (loaded, model_mapped, clip_mapped)
     
@@ -196,6 +260,9 @@ class LBWLoRALoader:
         
         if lora is None:
             lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
+            # Anima LoRA の場合は pos_embedder キーをフィルタする
+            if _is_anima_lora(lora_name):
+                lora = _filter_anima_lora_keys(lora)
             self.loaded_lora = (lora_path, lora)
         
         return lora
