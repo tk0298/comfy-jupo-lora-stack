@@ -22,7 +22,7 @@ LoRAをスタック形式で読み込みます
 ### MOSS-Image 対応
 - MOSS-Image (Base / SFT および派生モデル) のLoRAをスタックに適用できます (ComfyUI本体のMOSS-Image対応が必要)
 - 融合 `proj.qkv` 形式の公式Comfy版 (BF16 / INT8 ConvRot) でも、別々の q/k/v を持つLoRAを本体のキー変換経由で適用します
-- LBWのモデルタイプ `MOSS` を追加しました (`layers.0`$301C`layers.41` の42層 + IN / OUT)
+- LBWのモデルタイプ `MOSS` を追加しました (`layers.0`〜`layers.41` の42層 + IN / OUT)
   - 融合qkvのスライス (q / k / v) にもブロック強度が正しく反映されます
   - LoRAファイル名/パスに `moss-image` / `moss_image` / 単独の `moss` が含まれる場合は自動で `MOSS` が選ばれます。それ以外の名前 (例: `8-steps-dmd-lora`) はダイアログのモデルタイプから手動で選択してください
 - CLIP (Qwen3.5-9B) 側へのLoRAブロック指定はありません (MOSS-ImageのLoRAはDiTのみが対象)
