@@ -19,6 +19,14 @@ LoRAをスタック形式で読み込みます
 - 非対応バージョンのComfyUIでは明確なエラーメッセージを表示します
 - モデル情報ダイアログに量子化形式 (INT8 ConvRot等) が表示されます
 
+### MOSS-Image 対応
+- MOSS-Image (Base / SFT および派生モデル) のLoRAをスタックに適用できます (ComfyUI本体のMOSS-Image対応が必要)
+- 融合 `proj.qkv` 形式の公式Comfy版 (BF16 / INT8 ConvRot) でも、別々の q/k/v を持つLoRAを本体のキー変換経由で適用します
+- LBWのモデルタイプ `MOSS` を追加しました (`layers.0`〜`layers.41` の42層 + IN / OUT)
+  - 融合qkvのスライス (q / k / v) にもブロック強度が正しく反映されます
+  - LoRAファイル名/パスに `moss-image` / `moss_image` / 単独の `moss` が含まれる場合は自動で `MOSS` が選ばれます。それ以外の名前 (例: `8-steps-dmd-lora`) はダイアログのモデルタイプから手動で選択してください
+- CLIP (Qwen3.5-9B) 側へのLoRAブロック指定はありません (MOSS-ImageのLoRAはDiTのみが対象)
+
 ### GGUF (.gguf) 対応
 - Checkpoint Loader / Checkpoint Selector で `.gguf` の拡散モデル (Flux / WAN / Qwen-Image 等) を選択できます
 - `models/checkpoints` と `models/diffusion_models` (`models/unet`) の両方の `.gguf` が一覧に表示されます
@@ -66,7 +74,7 @@ LoRAをスタック形式で読み込みます
 
 ### LoRA Block Weight
 - LoRA右クリック -> `LBWを開く`を選択するとLBW設定用のGUIが表示されます
-- モデルタイプは`SD`, `FLUX`, `WAN`をとりあえず用意してあります
+- モデルタイプは`SD`, `FLUX`, `WAN`, `ANIMA`, `MOSS`(MOSS-Image)を用意してあります
 - ブロックはフルブロック相当で記載してあります(Lycoris等とUIを統合するため)
 - BIMO構文が使えます
 - FLUX, WANはU-netではないのでinput, ouputがあるわけではないですが、UIの都合上、ブロックをU-netのように左右に分けています

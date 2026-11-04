@@ -59,5 +59,18 @@ export const BlockConfigs = {
         ], 
         left: create_slider_info("blocks", "BLOCK", 0, 13, "model"), 
         right: create_slider_info("blocks", "BLOCK", 14, 27, "model"), 
-    }
+    }, 
+
+    // MOSS-Image: 単一ストリームDiT (layers.0 ~ layers.41 の42層)
+    // LoRAは各層の proj.{q,k,v,o,ffn_up_gate,ffn_down} を対象とする
+    MOSS: {
+        left: [
+            ["video_embedder", "IN", "model"], 
+            ...create_slider_info("layers", "LAYER", 0, 20, "model"), 
+        ], 
+        right: [
+            ...create_slider_info("layers", "LAYER", 21, 41, "model"), 
+            ["final_", "OUT", "model"], 
+        ], 
+    }, 
 }
