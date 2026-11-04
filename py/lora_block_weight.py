@@ -211,7 +211,11 @@ class LBWLoRALoader:
 
         for search_key, weight in block_info.items():
             for internal_key in internal_keys:
-                if search_key in internal_key:
+                # 融合 qkv などでは値が (key, (dim, offset, length)) のタプルになる
+                # (MOSS-Image / Flux 等)。部分文字列検索は key 名に対して行い、
+                # パッチ辞書側のキーと一致するよう元のタプルのまま登録する。
+                match_key = internal_key[0] if isinstance(internal_key, tuple) else internal_key
+                if search_key in match_key:
                     normalized[internal_key] = weight
         
         return normalized
