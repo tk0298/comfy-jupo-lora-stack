@@ -509,6 +509,10 @@ export class BlockWeightDialog extends BaseDialog {
         // Anima 判定: ファイル名/パスに "anima" が含まれる
         if (lower.includes("anima")) return "ANIMA";
 
+        // MOSS-Image 判定: "moss-image" / "moss_image" か、単独の "moss" トークン
+        // ("mossy" など別単語の誤検出を避けるため区切り文字で囲まれた場合のみ)
+        if (/moss[-_ ]?image/.test(lower) || /(^|[\/_\-\s.])moss($|[\/_\-\s.])/.test(lower)) return "MOSS";
+
         // WAN 判定
         if (lower.includes("wan") || lower.includes("wanvid")) return "WAN";
 
