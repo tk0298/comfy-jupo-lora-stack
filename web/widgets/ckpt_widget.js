@@ -1,6 +1,6 @@
 import { app } from "../../../scripts/app.js";
 import { CONSTANTS, Utils, Renderer } from "../ui.js";
-import { BaseWidget } from "./base_widget.js";
+import { BaseWidget, trackWidgetCanvas } from "./base_widget.js";
 import { CheckpointInfoDialog } from "../dialogs/checkpoint_info_dialog.js";
 
 // ==============================================
@@ -53,7 +53,8 @@ export function customize(widget) {
         if (x > width - 40) return this.incrementValue({ e, node, canvas });
 
         Utils.showCheckpointChooser(e, this.value, (selected) => {
-            const file = selected.replaceAll("/", "\\"); // サーバー側のパスに合わせる
+            // サーバー側の一覧 (options.values) の表記 (区切り文字) に合わせる
+            const file = Utils.matchPathOption(selected, this.options?.values);
             this.setValue(file, { e, node, canvas });
         });
 
@@ -131,12 +132,8 @@ export class PowerCheckpointCompoundWidget extends BaseWidget {
     // ------------------------------------------
     // イベントハンドラ
     // ------------------------------------------
-    // 値を「新しいオブジェクトの代入」で更新する。
-    // 最新ComfyUIフロントエンドではウィジェット値がストア管理される場合があり、
-    // this.value.xxx = ... のような破壊的変更が反映されないため。
-    updateValue(patch) {
-        this.value = { ...this.value, ...patch };
-    }
+    // 値の更新は BaseWidget.updateValue() (新しいオブジェクトの代入) を使う。
+    // ストア管理の値に破壊的変更 (this.value.xxx = ...) をすると反映されないため。
 
     onToggleClick(event, pos, node) {
         this.cancelMouseDown();
@@ -179,6 +176,7 @@ export class PowerCheckpointCompoundWidget extends BaseWidget {
     // 描画
     // ------------------------------------------
     draw(ctx, node, w, posY, height) {
+        trackWidgetCanvas(this, ctx, node);
         if (Utils.isLowQuality()) return;
 
         ctx.save();
@@ -270,7 +268,13 @@ export class PowerCheckpointCompoundWidget extends BaseWidget {
                 y <= widgetY + widgetHeight);
     }
 
-    showContextMenu(event, node) {
+    // 高さを明示 (Nodes 2.0 ではこれが無いと既定の 20px で描画が切れる)
+    computeSize(width) {
+        return [width ?? 0, CONSTANTS.PILL_HEIGHT];
+    }
+
+    // メニュー項目 (右クリックメニュー / ノードメニューのサブメニューで共用)
+    getMenuOptions(event, node) {
         const checkpointWidgets = node.widgets.filter(w => PowerCheckpointCompoundWidget.is(w));
         const widgetIndex = checkpointWidgets.indexOf(this);
         const canMoveUp = widgetIndex > 0;
@@ -288,7 +292,7 @@ export class PowerCheckpointCompoundWidget extends BaseWidget {
             {
                 content: "✏️ 表示名を設定",
                 callback: () => {
-                    app.canvas.prompt("表示名を入力", this.value.display_name || "", (v) => {
+                    Utils.prompt("表示名を入力", this.value.display_name || "", (v) => {
                         this.updateValue({ display_name: v || null });
                         node?.updateCheckpointValue?.();
                         node?.setDirtyCanvas?.(true, true);
@@ -330,6 +334,12 @@ export class PowerCheckpointCompoundWidget extends BaseWidget {
             }
         ];
 
+        return menuOptions;
+    }
+
+    showContextMenu(event, node) {
+        const menuOptions = this.getMenuOptions(event, node);
+
         new LiteGraph.ContextMenu(menuOptions, {
             event: event, 
             title: "Checkpoint", 
@@ -358,4 +368,4 @@ export class PowerCheckpointCompoundWidget extends BaseWidget {
 
         node?.setDirtyCanvas?.(true, true);
     }
-}
+}

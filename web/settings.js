@@ -30,9 +30,10 @@ const explorerViewModeSetting = {
 const explorerGridWidthSetting = {
     name: "カスタムエクスプローラのグリッド横幅", 
     id: mk_name("explorerGridWidth"), 
-    // "slider" は旧API。最新ComfyUIでは "range" を使用 (後方互換のため両方対応)
-    type: "range", 
-    defaultValue: 150, 
+    // ComfyUI フロントエンドの設定UIで有効なスライダー型は "slider"
+    // ("range" は未定義のため単なるテキスト入力になってしまう)
+    type: "slider",
+    defaultValue: 150,
     attrs: { min: 100, max: 300, step: 10 }, 
     onChange: (value) => {
         FileRenderManager.gridWidth = Number(value);
@@ -42,9 +43,8 @@ const explorerGridWidthSetting = {
 const explorerGridHeightSetting = {
     name: "カスタムエクスプローラのグリッド高さ", 
     id: mk_name("explorerGridHeight"), 
-    // "slider" は旧API。最新ComfyUIでは "range" を使用 (後方互換のため両方対応)
-    type: "range", 
-    defaultValue: 200, 
+    type: "slider",
+    defaultValue: 200,
     attrs: { min: 100, max: 300, step: 10 }, 
     onChange: (value) => {
         FileRenderManager.gridHeight = Number(value);

@@ -6,21 +6,27 @@ import { Utils } from "./ui.js"
 import { PowerLoRASpacerWidget } from "./widgets/spacer_widget.js";
 import { PowerLoRAButtonWidget } from "./widgets/button_widget.js";
 import { PowerCheckpointCompoundWidget } from "./widgets/ckpt_widget.js";
-import { installVueNodesRedrawHook } from "./widgets/base_widget.js";
+import {
+    installVueNodesRedrawHook,
+    installVueContextMenuBridge,
+    insertWidget,
+    removeWidget,
+    growNodeToFit,
+} from "./widgets/base_widget.js";
 
 const classNames = [mk_name("Checkpoint_Selector_(jupo)")];
 
 // ==============================================
 // addCustomWidget の互換ヘルパー
-// 最新ComfyUIでは node.addCustomWidget() が廃止され
-// widgets.push() が必要
+// node.addCustomWidget() があればそれを使う (ストア登録・値復元が行われる)
 // ==============================================
 function safeAddCustomWidget(node, widget) {
-    if (typeof node.addCustomWidget === "function") {
-        return node.addCustomWidget(widget);
-    }
-    if (!node.widgets) node.widgets = [];
-    node.widgets.push(widget);
+    return insertWidget(node, widget);
+}
+
+// 装飾用ウィジェット (値を持たない) はワークフローに保存しない
+function decorative(widget) {
+    widget.serialize = false;
     return widget;
 }
 
@@ -29,6 +35,8 @@ function safeAddCustomWidget(node, widget) {
 // ==============================================
 function hideCheckpointWidget(widget) {
     if (!widget) return;
+    // Nodes 2.0 / 右パネルの両方から隠す
+    try { widget.options ??= {}; widget.options.hideInPanel = true; } catch (_) {}
     widget.type = "hidden";
     widget.computeSize = () => [0, -4];
     widget.serializeValue = async () => widget.value;
@@ -43,7 +51,37 @@ const extension = {
 
     init: async function(app) {
         applyContextMenuPatch(classNames);
+        installVueContextMenuBridge();
     }, 
+
+    // ノードの右クリックメニュー (従来キャンバス / Nodes 2.0 共通の公式API)
+    getNodeMenuItems(node) {
+        const nodeClass = node?.comfyClass ?? node?.type;
+        if (!classNames.includes(nodeClass)) return [];
+        if (typeof node.addCheckpointWidget !== "function") return [];
+
+        const items = [null, {
+            content: "➕ Checkpointを追加",
+            callback: (value, options, event) => {
+                Utils.showCheckpointChooser(event, "None", (selected) => {
+                    node.disableAllWidgets();
+                    node.addCheckpointWidget(selected);
+                });
+            }
+        }];
+
+        const widgets = (node.widgets ?? []).filter(w => PowerCheckpointCompoundWidget.is(w));
+        widgets.forEach((w, i) => {
+            const v = w.getCurrentValue();
+            const name = Utils.formatDisplayName(v.path, false, v.display_name);
+            items.push({
+                content: `${v.enabled ? "🟢" : "⚪"} Checkpoint ${i + 1}: ${name}`,
+                has_submenu: true,
+                submenu: { options: w.getMenuOptions(null, node) },
+            });
+        });
+        return items;
+    },
 
     beforeRegisterNodeDef: async function(nodeType, nodeData, app) {
         const nodeClass = nodeType.comfyClass ?? nodeData?.name;
@@ -79,12 +117,12 @@ const extension = {
         // initializeUI
         // --------------------------------------
         nodeType.prototype.initializeUI = function() {
-            safeAddCustomWidget(this, new PowerLoRASpacerWidget("spacerTop", { marginTop: 0, marginBottom: 0 }));
+            safeAddCustomWidget(this, decorative(new PowerLoRASpacerWidget("spacerTop", { marginTop: 0, marginBottom: 0 })));
 
             // ヘッダー
             // checkpointにはヘッダーは必要ない
 
-            safeAddCustomWidget(this, new PowerLoRASpacerWidget("spacerBottom", { marginTop: 4, marginBottom: 4 }));
+            safeAddCustomWidget(this, decorative(new PowerLoRASpacerWidget("spacerBottom", { marginTop: 4, marginBottom: 4 })));
 
             // 追加ボタン
             const addButton = new PowerLoRAButtonWidget(
@@ -98,31 +136,39 @@ const extension = {
                     return true;
                 }
             );
-            safeAddCustomWidget(this, addButton);
+            safeAddCustomWidget(this, decorative(addButton));
         };
 
 
         // --------------------------------------
         // addCheckpointWidget
         // --------------------------------------
-        nodeType.prototype.addCheckpointWidget = function(selected = "None") {
-            this.counter++;
+        nodeType.prototype.addCheckpointWidget = function(selected = "None", initialValue = null) {
+            this.counter = (this.counter ?? 0) + 1;
+            // ウィジェット名はノード内で一意である必要がある (ストアのキー)
+            // "checkpoint" (隠し入力) と衝突しないよう番号付きの名前を使う
+            while (this.widgets?.some(w => w.name === `checkpoint_${this.counter}`)) {
+                this.counter++;
+            }
 
-            const checkpointWidget = new PowerCheckpointCompoundWidget(`checkpoint_${this.counter}`, {
+            const value = {
                 enabled: true, 
                 path: selected, 
+                ...(initialValue ?? {}),
+            };
+
+            let checkpointWidget = new PowerCheckpointCompoundWidget(`checkpoint_${this.counter}`, {
+                ...value,
                 deleteCallback: (widget) => this.removeCheckpointWidget(widget), 
                 valueChangedCallback: () => this.updateCheckpointValue(), 
             });
 
             // spacerBottomの前にウィジェットを挿入
-            if (!this.widgets) this.widgets = [];
-            const spacerIndex = this.widgets.findIndex(w => w.name === "spacerBottom");
-            if (spacerIndex !== -1) {
-                this.widgets.splice(spacerIndex, 0, checkpointWidget);
-            } else {
-                this.widgets.push(checkpointWidget);
-            }
+            const spacerIndex = this.widgets?.findIndex(w => w.name === "spacerBottom") ?? -1;
+            checkpointWidget = insertWidget(this, checkpointWidget, spacerIndex);
+
+            // ストアに同名の古い値が残っていた場合でも、確実にこの値で上書きする
+            checkpointWidget.value = { ...value };
 
             this.updateCheckpointValue();
             this.updateNodeSize();
@@ -134,10 +180,8 @@ const extension = {
         // removeCheckpointWidget
         // --------------------------------------
         nodeType.prototype.removeCheckpointWidget = function(widget) {
-            const index = this.widgets?.indexOf(widget) ?? -1;
-            if (index !== -1) {
-                this.widgets.splice(index, 1);
-            }
+            // splice ではなく removeWidget (ストアの値も削除される)
+            removeWidget(this, widget);
             this.updateCheckpointValue();
             this.updateNodeSize();
         };
@@ -147,7 +191,8 @@ const extension = {
         // clearAllWidgets
         // --------------------------------------
         nodeType.prototype.clearAllWidgets = function() {
-            this.widgets = (this.widgets ?? []).filter(w => w.name === "checkpoint");
+            const targets = (this.widgets ?? []).filter(w => w.name !== "checkpoint");
+            for (const w of targets) removeWidget(this, w);
         };
 
 
@@ -159,9 +204,10 @@ const extension = {
             if (checkpointWidget) {
                 const enabledWidget = this.widgets
                     .filter(w => PowerCheckpointCompoundWidget.is(w))
-                    .find(w => w.value.enabled);
-                const value = enabledWidget?.value ?? {};
-                checkpointWidget.value = JSON.stringify(value);
+                    .find(w => w.getCurrentValue()?.enabled);
+                const value = enabledWidget?.getCurrentValue() ?? {};
+                const json = JSON.stringify(value);
+                if (checkpointWidget.value !== json) checkpointWidget.value = json;
             }
             this.redrawCustomWidgets?.();
         };
@@ -171,14 +217,7 @@ const extension = {
         // updateNodeSize
         // --------------------------------------
         nodeType.prototype.updateNodeSize = function() {
-            if (typeof this.computeSize !== "function") return;
-            const computed = this.computeSize();
-            if (!this.size) this.size = [300, 200];
-            this.size[0] = Math.max(this.size[0], computed[0]);
-            this.size[1] = Math.max(this.size[1], computed[1]);
-            if (typeof this.setDirtyCanvas === "function") {
-                this.setDirtyCanvas(true, true);
-            }
+            growNodeToFit(this);
         };
 
 
@@ -187,7 +226,7 @@ const extension = {
         // --------------------------------------
         nodeType.prototype.disableAllWidgets = function() {
             this.widgets?.forEach(w => {
-                if (PowerCheckpointCompoundWidget.is(w) && w.value?.enabled) {
+                if (PowerCheckpointCompoundWidget.is(w) && w.getCurrentValue()?.enabled) {
                     w.updateValue({ enabled: false });
                 }
             });
@@ -203,7 +242,7 @@ const extension = {
             (this.widgets ?? []).forEach(w => {
                 if (!PowerCheckpointCompoundWidget.is(w)) return;
                 const shouldEnable = (w === target);
-                if (!!w.value?.enabled !== shouldEnable) {
+                if (!!w.getCurrentValue()?.enabled !== shouldEnable) {
                     w.updateValue({ enabled: shouldEnable });
                 }
             });
@@ -218,7 +257,7 @@ const extension = {
         // --------------------------------------
         nodeType.prototype.normalizeSelection = function() {
             const enabled = (this.widgets ?? [])
-                .filter(w => PowerCheckpointCompoundWidget.is(w) && w.value?.enabled);
+                .filter(w => PowerCheckpointCompoundWidget.is(w) && w.getCurrentValue()?.enabled);
             if (enabled.length > 1) {
                 this.selectCheckpointWidget(enabled[0]);
             }
@@ -234,7 +273,7 @@ const extension = {
 
             data.widgetValues = (this.widgets ?? [])
                 .filter(w => PowerCheckpointCompoundWidget.is(w))
-                .map(w => ({ ...w.value }));
+                .map(w => ({ ...w.getCurrentValue() }));
             
             data.displayMode = this.displayMode;
 
@@ -268,8 +307,8 @@ const extension = {
 
             if (data.widgetValues && Array.isArray(data.widgetValues)) {
                 data.widgetValues.forEach(value => {
-                    const widget = this.addCheckpointWidget(value.path);
-                    widget.value = { ...value };
+                    if (!value || typeof value !== "object") return;
+                    this.addCheckpointWidget(value.path ?? "None", value);
                 });
             }
 

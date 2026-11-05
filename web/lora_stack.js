@@ -8,7 +8,13 @@ import { PowerLoRAHeaderWidget } from "./widgets/header_widget.js";
 import { PowerLoRASpacerWidget } from "./widgets/spacer_widget.js";
 import { PowerLoRAButtonWidget } from "./widgets/button_widget.js";
 import { PowerLoRACompoundWidget } from "./widgets/lora_widget.js";
-import { installVueNodesRedrawHook } from "./widgets/base_widget.js";
+import {
+    installVueNodesRedrawHook,
+    installVueContextMenuBridge,
+    insertWidget,
+    removeWidget,
+    growNodeToFit,
+} from "./widgets/base_widget.js";
 
 
 const classNames = [mk_name("LoRA_Stack_(jupo)"), mk_name("LoRA_Loader_(jupo)")];
@@ -16,17 +22,15 @@ const classNames = [mk_name("LoRA_Stack_(jupo)"), mk_name("LoRA_Loader_(jupo)")]
 
 // ==============================================
 // addCustomWidget の互換ヘルパー
-// 最新ComfyUIでは node.addCustomWidget() が廃止され
-// widgets.push() + computeSize() 再計算が必要
+// node.addCustomWidget() があればそれを使う (ストア登録・値復元が行われる)
 // ==============================================
 function safeAddCustomWidget(node, widget) {
-    // 旧API: node.addCustomWidget(widget) が存在すればそちらを使用
-    if (typeof node.addCustomWidget === "function") {
-        return node.addCustomWidget(widget);
-    }
-    // 新API: widgets 配列に直接追加
-    if (!node.widgets) node.widgets = [];
-    node.widgets.push(widget);
+    return insertWidget(node, widget);
+}
+
+// 装飾用ウィジェット (値を持たない) はワークフローに保存しない
+function decorative(widget) {
+    widget.serialize = false;
     return widget;
 }
 
@@ -37,6 +41,8 @@ function safeAddCustomWidget(node, widget) {
 // ==============================================
 function hideLoraListWidget(widget) {
     if (!widget) return;
+    // Nodes 2.0 / 右パネルの両方から隠す
+    try { widget.options ??= {}; widget.options.hideInPanel = true; } catch (_) {}
     // 方法1: type を hidden に (旧来の方法)
     widget.type = "hidden";
     // 方法2: 描画サイズを 0 にする (最新版対応)
@@ -57,6 +63,36 @@ const extension = {
 
     init: async function(app) {
         applyContextMenuPatch(classNames);
+        installVueContextMenuBridge();
+    },
+
+    // ノードの右クリックメニュー (従来キャンバス / Nodes 2.0 共通の公式API)
+    // Nodes 2.0 でウィジェット上以外を右クリックした場合もここから各LoRAを操作できる
+    getNodeMenuItems(node) {
+        const nodeClass = node?.comfyClass ?? node?.type;
+        if (!classNames.includes(nodeClass)) return [];
+        if (!Array.isArray(node.loraWidgets)) return [];
+
+        const items = [null, {
+            content: "➕ LoRAを追加",
+            callback: (value, options, event) => {
+                Utils.showLoRAChooser(event, "None", (selectedLora) => {
+                    node.addLoRAWidget(selectedLora);
+                });
+            }
+        }];
+
+        // LoRA ごとにサブメニュー (Nodes 2.0 のメニューはサブメニュー1階層まで対応)
+        node.loraWidgets.forEach((w, i) => {
+            const v = w.getCurrentValue();
+            const name = Utils.formatDisplayName(v.lora, false, v.display_name);
+            items.push({
+                content: `${v.enabled ? "🟢" : "⚪"} LoRA ${i + 1}: ${name}`,
+                has_submenu: true,
+                submenu: { options: w.getMenuOptions(null, node) },
+            });
+        });
+        return items;
     },
 
     beforeRegisterNodeDef: async function(nodeType, nodeData, app) {
@@ -96,9 +132,12 @@ const extension = {
         nodeType.prototype.updateLoraListValue = function() {
             const loraListWidget = this.widgets?.find(w => w.name === "lora_list");
             if (loraListWidget) {
-                const loraList = this.loraWidgets.map(widget => widget.value);
-                loraListWidget.value = JSON.stringify(loraList);
+                const loraList = (this.loraWidgets ?? []).map(widget => widget.getCurrentValue());
+                const json = JSON.stringify(loraList);
+                if (loraListWidget.value !== json) loraListWidget.value = json;
             }
+            // Nodes 2.0: ヘッダー (全体トグル) などの描画も更新する
+            this.redrawCustomWidgets?.();
         };
 
         // ===== シリアライズ =====
@@ -109,7 +148,7 @@ const extension = {
 
             data.lora_list = this.widgets
                 ?.filter(widget => PowerLoRACompoundWidget.is(widget))
-                .map(widget => widget.value) ?? [];
+                .map(widget => ({ ...widget.getCurrentValue() })) ?? [];
 
             data.lora_display_mode = this.loraDisplayMode;
             data.clip_setting_mode = this.clipSettingMode;
@@ -141,10 +180,19 @@ const extension = {
 
             this.initializeUI();
 
-            if (Array.isArray(data.lora_list)) {
-                data.lora_list.forEach(widgetData => {
-                    const widget = this.addLoRAWidget(widgetData.lora);
-                    widget.value = widgetData;
+            // lora_list (ノード直下) が無い場合は、隠し lora_list ウィジェットの保存値から復元
+            let loraList = data?.lora_list;
+            if (!Array.isArray(loraList)) {
+                const saved = data?.widgets_values_named?.lora_list;
+                if (typeof saved === "string" && saved.trim()) {
+                    try { loraList = JSON.parse(saved); } catch (_) { loraList = null; }
+                }
+            }
+
+            if (Array.isArray(loraList)) {
+                loraList.forEach(widgetData => {
+                    if (!widgetData || typeof widgetData !== "object") return;
+                    this.addLoRAWidget(widgetData.lora ?? "None", widgetData);
                 });
             }
 
@@ -155,9 +203,9 @@ const extension = {
         };
 
         nodeType.prototype.initializeUI = function() {
-            safeAddCustomWidget(this, new PowerLoRASpacerWidget("spacerTop", { marginTop: 0, marginBottom: 0 }));
-            safeAddCustomWidget(this, new PowerLoRAHeaderWidget("lora_header"));
-            safeAddCustomWidget(this, new PowerLoRASpacerWidget("spacerBottom", { marginTop: 4, marginBottom: 4 }));
+            safeAddCustomWidget(this, decorative(new PowerLoRASpacerWidget("spacerTop", { marginTop: 0, marginBottom: 0 })));
+            safeAddCustomWidget(this, decorative(new PowerLoRAHeaderWidget("lora_header")));
+            safeAddCustomWidget(this, decorative(new PowerLoRASpacerWidget("spacerBottom", { marginTop: 4, marginBottom: 4 })));
 
             const addButton = new PowerLoRAButtonWidget(
                 "add_lora_button",
@@ -169,32 +217,44 @@ const extension = {
                     return true;
                 }
             );
-            safeAddCustomWidget(this, addButton);
+            safeAddCustomWidget(this, decorative(addButton));
         };
 
-        nodeType.prototype.addLoRAWidget = function(selectedLora = "None") {
-            this.loraCounter++;
+        nodeType.prototype.addLoRAWidget = function(selectedLora = "None", initialValue = null) {
+            this.loraWidgets ??= [];
+            this.loraCounter = (this.loraCounter ?? 0) + 1;
+            // ウィジェット名はノード内で一意である必要がある (ストアのキー)
+            while (this.widgets?.some(w => w.name === `lora_${this.loraCounter}`)) {
+                this.loraCounter++;
+            }
 
-            const loraWidget = new PowerLoRACompoundWidget(`lora_${this.loraCounter}`, {
+            const value = {
                 enabled: true,
                 lora: selectedLora,
                 strength_model: 1.0,
                 strength_clip: 1.0,
                 clip_mode: this.clipSettingMode === "individual",
+                ...(initialValue ?? {}),
+            };
+            // 旧形式 (strength) の互換
+            if (initialValue?.strength !== undefined && initialValue?.strength_model === undefined) {
+                value.strength_model = initialValue.strength;
+            }
+            delete value.strength;
+
+            let loraWidget = new PowerLoRACompoundWidget(`lora_${this.loraCounter}`, {
+                ...value,
                 deleteCallback: (widget) => this.removeLoRAWidget(widget),
                 valueChangedCallback: () => this.updateLoraListValue(),
             });
 
+            // spacerBottom の前に挿入
+            const spacerIndex = this.widgets?.findIndex(w => w.name === "spacerBottom") ?? -1;
+            loraWidget = insertWidget(this, loraWidget, spacerIndex);
             this.loraWidgets.push(loraWidget);
 
-            // spacerBottom の前に挿入
-            if (!this.widgets) this.widgets = [];
-            const spacerIndex = this.widgets.findIndex(w => w.name === "spacerBottom");
-            if (spacerIndex !== -1) {
-                this.widgets.splice(spacerIndex, 0, loraWidget);
-            } else {
-                this.widgets.push(loraWidget);
-            }
+            // ストアに同名の古い値が残っていた場合でも、確実にこの値で上書きする
+            loraWidget.value = { ...value };
 
             this.updateLoraListValue();
             this.updateNodeSize();
@@ -202,13 +262,11 @@ const extension = {
         };
 
         nodeType.prototype.removeLoRAWidget = function(widget) {
-            const index = this.loraWidgets.indexOf(widget);
+            const index = this.loraWidgets?.indexOf(widget) ?? -1;
             if (index !== -1) {
                 this.loraWidgets.splice(index, 1);
-                const widgetIndex = this.widgets?.indexOf(widget) ?? -1;
-                if (widgetIndex !== -1) {
-                    this.widgets.splice(widgetIndex, 1);
-                }
+                // splice ではなく removeWidget (ストアの値も削除される)
+                removeWidget(this, widget);
                 this.updateLoraListValue();
                 this.updateNodeSize();
             }
@@ -216,20 +274,13 @@ const extension = {
 
         nodeType.prototype.clearAllWidgets = function() {
             // lora_list ウィジェットだけ残し、他は削除
-            this.widgets = (this.widgets ?? []).filter(w => w.name === "lora_list");
+            const targets = (this.widgets ?? []).filter(w => w.name !== "lora_list");
+            for (const w of targets) removeWidget(this, w);
             this.loraWidgets = [];
         };
 
         nodeType.prototype.updateNodeSize = function() {
-            // computeSize が存在しない場合の安全ガード
-            if (typeof this.computeSize !== "function") return;
-            const computed = this.computeSize();
-            if (!this.size) this.size = [300, 200];
-            this.size[0] = Math.max(this.size[0], computed[0]);
-            this.size[1] = Math.max(this.size[1], computed[1]);
-            if (typeof this.setDirtyCanvas === "function") {
-                this.setDirtyCanvas(true, true);
-            }
+            growNodeToFit(this);
         };
 
         // ===== コンテキストメニュー =====

@@ -4,7 +4,7 @@ import { $el } from "../../../scripts/ui.js";
 import { mk_name, mk_endpoint, api_get, api_post, loadCSS } from "../utils.js";
 
 import { CONSTANTS, Utils, Renderer } from "../ui.js";
-import { BaseWidget } from "./base_widget.js";
+import { BaseWidget, trackWidgetCanvas } from "./base_widget.js";
 
 
 // ==============================================
@@ -20,6 +20,7 @@ export class PowerLoRAButtonWidget extends BaseWidget {
     }
     
     draw(ctx, node, width, y, height) {
+        trackWidgetCanvas(this, ctx, node);
         if (Utils.isLowQuality()) return;
         
         const margin = CONSTANTS.MARGIN;
