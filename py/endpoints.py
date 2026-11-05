@@ -1,6 +1,6 @@
 from .utils import Endpoint
-from .quant_utils import detect_quantization, format_label
-from .gguf_utils import list_checkpoints_with_gguf, resolve_gguf_path, is_gguf
+from .quant_utils import detect_quantization, format_label, is_nvfp4, nvfp4_runtime_status
+from .gguf_utils import list_checkpoints_with_gguf, resolve_gguf_path, is_gguf, resolve_checkpoint_path
 import folder_paths
 
 from aiohttp import web
@@ -41,8 +41,9 @@ def get_fullpath(path: str):
     folder, file = path[:pos], path[pos+1:]
 
     full_path = folder_paths.get_full_path(folder, file)
-    if not full_path and folder == "checkpoints" and is_gguf(file):
-        full_path = resolve_gguf_path(file)
+    if not full_path and folder == "checkpoints":
+        # .gguf / diffusion_models の NVFP4 モデル等 (Checkpoint 一覧に追加しているもの)
+        full_path = resolve_checkpoint_path(file)
     return full_path
 
 
@@ -69,6 +70,13 @@ async def load_metadata(req: web.Request):
         if quant_info:
             metadata = metadata or {}
             metadata["__quantization__"] = format_label(quant_info)
+            # NVFP4: この環境で FP4 演算 (高速) が使えるかを付記
+            if is_nvfp4(quant_info) and not quant_info.get("modelopt"):
+                status = nvfp4_runtime_status()
+                if not status["loadable"]:
+                    metadata["__quantization__"] += " ※この環境では読み込めません: " + " / ".join(status["reasons"])
+                elif not status["fast"]:
+                    metadata["__quantization__"] += " ※逆量子化で動作 (低速): " + " / ".join(status["reasons"])
             gguf_info = quant_info.get("gguf")
             if gguf_info:
                 if gguf_info.get("architecture"):

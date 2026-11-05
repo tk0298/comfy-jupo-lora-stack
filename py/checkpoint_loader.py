@@ -3,6 +3,9 @@ from .quant_utils import (
     detect_quantization,
     format_label,
     is_int8_convrot,
+    is_nvfp4,
+    check_nvfp4_loadable,
+    scan_safetensors,
     comfy_supports_layer_quant,
 )
 from .gguf_utils import (
@@ -125,13 +128,44 @@ def _check_quantized_checkpoint(ckpt_name: str):
             "ComfyUI v0.27.0 以降が必要です。ComfyUI を更新してください。"
         )
 
-    if is_int8_convrot(info):
+    # NVFP4: ModelOpt 形式・comfy-kitchen 無し等は分かりやすいエラー、
+    #        高速演算できない環境 (Blackwell 以外 / cu130 未満) は警告
+    check_nvfp4_loadable(info, ckpt_name)
+
+    if is_int8_convrot(info) or is_nvfp4(info):
+        fmt = "NVFP4" if is_nvfp4(info) else "INT8 ConvRot"
         logging.info(
-            "[JupoCheckpoint] INT8 ConvRot: LoRA はサンプリング時に "
+            f"[JupoCheckpoint] {fmt}: LoRA はサンプリング時に "
             "逆量子化を介してネイティブに適用されます"
         )
 
     return info
+
+
+def _is_diffusion_only(full_path: str, info: dict | None) -> bool:
+    """拡散モデル (UNet / DiT) 単体の safetensors か。"""
+    if not full_path or not full_path.lower().endswith((".safetensors", ".sft")):
+        return False
+    if info and "diffusion_only" in info:
+        return bool(info["diffusion_only"])
+    scanned = scan_safetensors(full_path)
+    return bool(scanned and scanned.get("diffusion_only"))
+
+
+def _load_diffusion_only(full_path: str, name: str):
+    """
+    拡散モデル単体 (NVFP4 モデル等) を UNETLoader と同じ方法でロードする。
+    CLIP / VAE は含まれないため (MODEL, None, None) を返す。
+    """
+    import comfy.sd
+    logging.info(f"[JupoCheckpoint] 拡散モデル単体のファイルを検出: {name}")
+    with _suppress_anima_posembed_warnings() if _is_anima_checkpoint(name) else contextlib.nullcontext():
+        model = comfy.sd.load_diffusion_model(full_path)
+    logging.info(
+        "[JupoCheckpoint] 拡散モデル単体のため CLIP / VAE は出力されません。"
+        "CLIP / VAE は別のローダーで読み込んでください"
+    )
+    return (model, None, None)
 
 
 def _load_checkpoint_auto(path: str):
@@ -143,10 +177,29 @@ def _load_checkpoint_auto(path: str):
     非対応の ComfyUI では明確なエラーを出す。
     .gguf は ComfyUI-GGUF 経由で拡散モデルのみをロードし、CLIP / VAE は None を返す。
     """
-    _check_quantized_checkpoint(path)
+    info = _check_quantized_checkpoint(path)
 
     if is_gguf(path):
         return _load_gguf_checkpoint(path)
+
+    # NVFP4 モデル等の拡散モデル単体ファイル (diffusion_models フォルダ / checkpoints に置いたもの)
+    # は CheckpointLoaderSimple では「モデル形式を判定できない」エラーになるため、
+    # 拡散モデルとしてロードする
+    try:
+        full_path = resolve_checkpoint_path(path)
+    except Exception:
+        full_path = None
+    if full_path and _is_diffusion_only(full_path, info):
+        return _load_diffusion_only(full_path, path)
+
+    # checkpoints フォルダ以外 (diffusion_models) にあるフルチェックポイント
+    if full_path and path not in folder_paths.get_filename_list("checkpoints"):
+        import comfy.sd
+        out = comfy.sd.load_checkpoint_guess_config(
+            full_path, output_vae=True, output_clip=True,
+            embedding_directory=folder_paths.get_folder_paths("embeddings"),
+        )
+        return out[:3]
 
     if _is_anima_checkpoint(path):
         logging.info(f"[JupoCheckpoint] Anima チェックポイントを検出: {path}")

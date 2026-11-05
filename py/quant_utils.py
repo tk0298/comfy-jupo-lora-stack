@@ -139,6 +139,13 @@ def detect_quantization(filepath: str) -> dict | None:
                 formats.add("float8_e4m3fn")
                 break
 
+    # --- 4) NVIDIA ModelOpt 形式の NVFP4 (comfy_quant メタデータ無し)
+    #        ComfyUI 本体は comfy_quant 形式の NVFP4 のみ読み込めるため、区別して報告する
+    modelopt = False
+    if not formats and _looks_like_modelopt_nvfp4(header):
+        formats.add("nvfp4")
+        modelopt = True
+
     if not formats:
         return None
 
@@ -147,7 +154,199 @@ def detect_quantization(filepath: str) -> dict | None:
         "convrot": convrot,
         "convrot_groupsize": convrot_groupsize,
         "num_layers": num_layers,
+        "modelopt": modelopt,
+        "diffusion_only": is_diffusion_only_header(header),
     }
+
+
+# ===============================================
+# NVFP4 / 拡散モデル単体ファイルの判定 (ヘッダのキー名のみで高速判定)
+# ===============================================
+
+def _looks_like_modelopt_nvfp4(header: dict) -> bool:
+    """
+    comfy_quant を持たず、uint8 の weight と weight_scale_2 を持つ = ModelOpt 形式の NVFP4。
+    """
+    has_scale2 = False
+    for k, v in header.items():
+        if k == "__metadata__":
+            continue
+        if k.endswith(".comfy_quant"):
+            return False
+        if k.endswith(".weight_scale_2"):
+            has_scale2 = True
+    if not has_scale2:
+        return False
+    # 対応する weight が uint8 (FP4 x2 パック) であることを確認
+    for k, v in header.items():
+        if k.endswith(".weight_scale_2"):
+            w = header.get(k[: -len("_scale_2")])
+            if isinstance(w, dict) and w.get("dtype") == "U8":
+                return True
+    return False
+
+
+def header_has_nvfp4(header: dict) -> bool:
+    """
+    ヘッダに NVFP4 レイヤーが含まれるか (comfy_quant 形式 / ModelOpt 形式の両方)。
+    NVFP4 は weight_scale_2 (テンソル単位スケール) を持つ唯一の形式なので、
+    comfy_quant の中身を読まずにキー名だけで判定できる。
+    """
+    meta = header.get("__metadata__") or {}
+    quant_meta = meta.get("_quantization_metadata")
+    if isinstance(quant_meta, str) and '"nvfp4"' in quant_meta:
+        return True
+    for k in header:
+        if k.endswith(".weight_scale_2"):
+            return True
+    return False
+
+
+# ComfyUI の model_detection.unet_prefix_from_state_dict と同じ候補
+_CHECKPOINT_UNET_PREFIXES = ("model.diffusion_model.", "model.model.", "net.")
+
+
+def is_diffusion_only_header(header: dict) -> bool:
+    """
+    拡散モデル (UNet / DiT) 単体のファイルか (= CheckpointLoaderSimple では読めない)。
+    ComfyUI 本体のチェックポイント判定 (unet_prefix_from_state_dict) と同じ基準で、
+    チェックポイント用プレフィックスのキーが 5 個以下なら拡散モデル単体とみなす。
+    """
+    keys = [k for k in header if k != "__metadata__"]
+    # SAM3 / SenseNova はプレフィックス無しでもチェックポイント扱い (本体と同じ特例)
+    if any(k.startswith("detector.") for k in keys) and any(k.startswith("tracker.") for k in keys):
+        return False
+    if "fm_modules.vision_model_mot_gen.embeddings.patch_embedding.weight" in header:
+        return False
+    counts = {p: 0 for p in _CHECKPOINT_UNET_PREFIXES}
+    for k in keys:
+        for p in _CHECKPOINT_UNET_PREFIXES:
+            if k.startswith(p):
+                counts[p] += 1
+                break
+    return max(counts.values()) <= 5
+
+
+_header_cache: dict = {}
+
+
+def scan_safetensors(filepath: str) -> dict | None:
+    """
+    一覧表示用の軽量スキャン (ヘッダのみ・mtime/サイズでキャッシュ)。
+    戻り値: {"nvfp4": bool, "modelopt": bool, "diffusion_only": bool}
+    """
+    try:
+        st = os.stat(filepath)
+    except OSError:
+        return None
+    cache_key = (filepath, st.st_mtime_ns, st.st_size)
+    cached = _header_cache.get(filepath)
+    if cached and cached[0] == cache_key:
+        return cached[1]
+    try:
+        header, _ = read_safetensors_header(filepath)
+    except Exception as e:
+        logging.debug(f"[JupoQuant] ヘッダ読み込み失敗: {filepath}: {e}")
+        result = None
+    else:
+        nvfp4 = header_has_nvfp4(header)
+        result = {
+            "nvfp4": nvfp4,
+            "modelopt": nvfp4 and _looks_like_modelopt_nvfp4(header),
+            "diffusion_only": is_diffusion_only_header(header),
+        }
+    _header_cache[filepath] = (cache_key, result)
+    return result
+
+
+def is_nvfp4(info: dict | None) -> bool:
+    return bool(info) and "nvfp4" in info.get("formats", set())
+
+
+# ===============================================
+# NVFP4 の実行環境チェック
+# ===============================================
+
+def nvfp4_runtime_status(device=None) -> dict:
+    """
+    この ComfyUI で NVFP4 を高速 (FP4 Tensor Core) に演算できるかを調べる。
+    戻り値: {"loadable": bool, "fast": bool, "reasons": [str, ...]}
+      loadable=False … comfy-kitchen が無く NVFP4 テンソルを扱えない (読み込み不可)
+      fast=False     … 読み込みは可能だが逆量子化して演算する (速度・VRAM の利点が小さい)
+    """
+    reasons = []
+    loadable = True
+    fast = True
+
+    try:
+        import comfy.quant_ops as quant_ops
+    except Exception:
+        return {"loadable": False, "fast": False, "reasons": ["ComfyUI が古く NVFP4 (comfy.quant_ops) に未対応です"]}
+
+    if not getattr(quant_ops, "_CK_AVAILABLE", False):
+        loadable = False
+        fast = False
+        reasons.append(
+            "comfy-kitchen が読み込めません (ComfyUI の Python で "
+            "`python -m pip install -r requirements.txt` を実行してください)"
+        )
+    if "nvfp4" not in getattr(quant_ops, "QUANT_ALGOS", {}):
+        loadable = False
+        fast = False
+        reasons.append("この ComfyUI は NVFP4 に未対応です。ComfyUI を更新してください")
+
+    try:
+        import torch
+        cuda = torch.version.cuda
+        if cuda is None:
+            fast = False
+            reasons.append("CUDA 版 PyTorch ではありません")
+        else:
+            if tuple(int(x) for x in str(cuda).split(".")[:2]) < (13, 0):
+                fast = False
+                reasons.append(f"PyTorch の CUDA が {cuda} です (高速カーネルには cu130 以上が必要)")
+    except Exception:
+        pass
+
+    try:
+        import comfy.model_management as mm
+        if hasattr(mm, "supports_nvfp4_compute"):
+            if device is None:
+                device = mm.get_torch_device()
+            if not mm.supports_nvfp4_compute(device):
+                fast = False
+                reasons.append("GPU が FP4 演算に未対応です (Blackwell 世代 = RTX 50 系 / B200 等が必要)")
+    except Exception as e:
+        logging.debug(f"[JupoQuant] supports_nvfp4_compute の確認に失敗: {e}")
+
+    return {"loadable": loadable, "fast": fast, "reasons": reasons}
+
+
+def check_nvfp4_loadable(info: dict | None, name: str = ""):
+    """
+    NVFP4 モデルを読み込めるか確認し、読み込めない場合は分かりやすいエラーを出す。
+    読み込めるが高速演算できない場合は警告ログを出す。
+    """
+    if not is_nvfp4(info):
+        return
+    label = f" ({name})" if name else ""
+
+    if info.get("modelopt"):
+        raise RuntimeError(
+            f"NVIDIA ModelOpt 形式の NVFP4 モデル{label}は ComfyUI では読み込めません。"
+            "ComfyUI 形式 (comfy_quant メタデータ付き) の NVFP4 モデルを使用してください"
+        )
+
+    status = nvfp4_runtime_status()
+    if not status["loadable"]:
+        raise RuntimeError(f"NVFP4 モデル{label}を読み込めません: " + " / ".join(status["reasons"]))
+    if status["fast"]:
+        logging.info(f"[JupoQuant] NVFP4 モデル{label}: FP4 Tensor Core で演算します")
+    else:
+        logging.warning(
+            f"[JupoQuant] NVFP4 モデル{label}は読み込めますが、逆量子化して演算するため"
+            "速度・VRAM の利点が小さくなります: " + " / ".join(status["reasons"])
+        )
 
 
 def format_label(info: dict | None) -> str:
@@ -169,7 +368,7 @@ def format_label(info: dict | None) -> str:
         elif fmt == "float8_e5m2":
             labels.append("FP8 (e5m2)")
         elif fmt == "nvfp4":
-            labels.append("NVFP4")
+            labels.append("NVFP4 (ModelOpt 形式・ComfyUI 非対応)" if info.get("modelopt") else "NVFP4")
         elif fmt == "mxfp8":
             labels.append("MXFP8")
         else:

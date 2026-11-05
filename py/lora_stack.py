@@ -131,12 +131,12 @@ def apply_stack(stack, model: ModelPatcher = None, clip: CLIP = None):
     if model_quantized:
         if not comfy_supports_layer_quant():
             raise RuntimeError(
-                "[LoRAStack] 量子化モデル (INT8 ConvRot 等) への LoRA 適用には "
+                "[LoRAStack] 量子化モデル (NVFP4 / FP8 / INT8 ConvRot 等) への LoRA 適用には "
                 "ComfyUI v0.27.0 以降が必要です。ComfyUI を更新してください。"
             )
         if any(v.get("enabled", False) for v in available_loras):
             logging.info(
-                "[LoRAStack] 量子化モデル (INT8 ConvRot 等) を検出: "
+                "[LoRAStack] 量子化モデル (NVFP4 / FP8 / INT8 ConvRot 等) を検出: "
                 "LoRA は逆量子化パッチ経由で適用されます"
             )
 
