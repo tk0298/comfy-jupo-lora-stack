@@ -26,6 +26,15 @@ LoRAをスタック形式で読み込みます
 - 非対応バージョンのComfyUIでは明確なエラーメッセージを表示します
 - モデル情報ダイアログに量子化形式 (INT8 ConvRot等) が表示されます
 
+### NVFP4 対応
+- ComfyUI 形式 (comfy_quant) の NVFP4 モデルを Checkpoint Loader / Selector から読み込めます
+- `models/diffusion_models` にある NVFP4 モデルも一覧に表示されます (拡散モデル単体なので CLIP / VAE は別のローダーで読み込んでください)
+- 拡散モデル単体の safetensors を `models/checkpoints` に置いた場合も読み込めます
+- LoRA / LBW / start・end スケジュールは ComfyUI 本体の逆量子化パッチ経由でそのまま使えます
+- FP4 演算 (高速) には Blackwell 世代の GPU (RTX 50 系など)、PyTorch cu130 以上、comfy-kitchen が必要です。条件を満たさない場合は警告を出し、逆量子化して動作します
+- NVIDIA ModelOpt 形式の NVFP4 は ComfyUI 本体が非対応のため、分かりやすいエラーを出します
+- モデル情報ダイアログに `NVFP4` と、この環境で高速演算できるかを表示します
+
 ### MOSS-Image 対応
 - MOSS-Image (Base / SFT および派生モデル) のLoRAをスタックに適用できます (ComfyUI本体のMOSS-Image対応が必要)
 - 融合 `proj.qkv` 形式の公式Comfy版 (BF16 / INT8 ConvRot) でも、別々の q/k/v を持つLoRAを本体のキー変換経由で適用します

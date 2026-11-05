@@ -63,11 +63,48 @@ def list_gguf_models() -> list:
         return []
 
 
+# NVFP4 の拡散モデルを探す ComfyUI フォルダ種別
+_NVFP4_SOURCE_FOLDER = "diffusion_models"
+_SAFETENSORS_EXTS = (".safetensors", ".sft")
+
+
+def list_nvfp4_diffusion_models() -> list:
+    """
+    diffusion_models フォルダにある NVFP4 の拡散モデル (safetensors) の相対パス一覧。
+    NVFP4 モデルは拡散モデル単体で配布されることがほとんどなので、
+    Checkpoint Loader / Selector からも選べるようにする。
+    ヘッダのキー名だけで判定し、結果は mtime でキャッシュする。
+    """
+    from .quant_utils import scan_safetensors
+    result = []
+    try:
+        names = folder_paths.get_filename_list(_NVFP4_SOURCE_FOLDER)
+    except Exception as e:
+        logging.debug(f"[JupoNVFP4] diffusion_models 一覧の取得に失敗: {e}")
+        return result
+    for name in names:
+        if not str(name).lower().endswith(_SAFETENSORS_EXTS):
+            continue
+        try:
+            full_path = folder_paths.get_full_path(_NVFP4_SOURCE_FOLDER, name)
+        except Exception:
+            full_path = None
+        if not full_path:
+            continue
+        info = scan_safetensors(full_path)
+        if info and info.get("nvfp4"):
+            result.append(name)
+    return result
+
+
 def list_checkpoints_with_gguf() -> list:
-    """通常の checkpoints 一覧の後ろに .gguf モデルを追加した一覧。"""
+    """
+    通常の checkpoints 一覧の後ろに .gguf モデルと、
+    diffusion_models の NVFP4 モデルを追加した一覧。
+    """
     base = list(folder_paths.get_filename_list("checkpoints"))
     seen = set(base)
-    for name in list_gguf_models():
+    for name in list_gguf_models() + list_nvfp4_diffusion_models():
         if name not in seen:
             base.append(name)
             seen.add(name)
@@ -83,7 +120,10 @@ def resolve_gguf_path(name: str):
 
 
 def resolve_checkpoint_path(name: str):
-    """checkpoints を優先し、無ければ .gguf 用の仮想フォルダからフルパスを解決する。"""
+    """
+    checkpoints を優先し、無ければ .gguf 用の仮想フォルダ、
+    それでも無ければ diffusion_models (NVFP4 等の拡散モデル単体) からフルパスを解決する。
+    """
     path = None
     try:
         path = folder_paths.get_full_path("checkpoints", name)
@@ -91,6 +131,11 @@ def resolve_checkpoint_path(name: str):
         path = None
     if not path and is_gguf(name):
         path = resolve_gguf_path(name)
+    if not path and str(name).lower().endswith(_SAFETENSORS_EXTS):
+        try:
+            path = folder_paths.get_full_path(_NVFP4_SOURCE_FOLDER, name)
+        except Exception:
+            path = None
     return path
 
 
