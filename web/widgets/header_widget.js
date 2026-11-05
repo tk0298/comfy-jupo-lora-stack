@@ -4,7 +4,7 @@ import { $el } from "../../../scripts/ui.js";
 import { mk_name, mk_endpoint, api_get, api_post, loadCSS } from "../utils.js";
 
 import { CONSTANTS, Utils, Renderer } from "../ui.js";
-import { BaseWidget } from "./base_widget.js";
+import { BaseWidget, trackWidgetCanvas } from "./base_widget.js";
 
 // ==============================================
 // ヘッダーウィジェット
@@ -20,7 +20,8 @@ export class PowerLoRAHeaderWidget extends BaseWidget {
     }
 
     draw(ctx, node, width, y, height) {
-        if (Utils.isLowQuality() || node.loraWidgets.length === 0) return;
+        trackWidgetCanvas(this, ctx, node);
+        if (Utils.isLowQuality() || !node.loraWidgets?.length) return;
 
         const margin = CONSTANTS.MARGIN;
         const padding = CONSTANTS.PILL_PADDING;
@@ -65,10 +66,14 @@ export class PowerLoRAHeaderWidget extends BaseWidget {
     }
 
     onToggleAllClick(event, pos, node) {
+        if (!node.loraWidgets?.length) return true;
         const allEnabled = node.loraWidgets.every(w => w.value.enabled);
         const newState = !allEnabled;
-        node.loraWidgets.forEach(w => w.value.enabled = newState);
-        node.setDirtyCanvas(true, true);
+        node.loraWidgets.forEach(w => {
+            if (!!w.value.enabled !== newState) w.updateValue({ enabled: newState });
+        });
+        node.updateLoraListValue?.();
+        node.setDirtyCanvas?.(true, true);
         this.cancelMouseDown();
         return true;
     }

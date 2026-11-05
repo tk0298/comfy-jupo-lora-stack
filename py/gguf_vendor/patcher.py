@@ -1,5 +1,6 @@
 # (c) City96 || Apache-2.0 (apache.org/licenses/LICENSE-2.0)
-# GGUFModelPatcher は ComfyUI-GGUF nodes.py より (改変なし)。
+# GGUFModelPatcher は ComfyUI-GGUF nodes.py より。
+# (最新 ComfyUI の patch_weight_to_device(return_weight=, force_cast=) シグネチャに対応する改変のみ)
 # load_gguf_diffusion_model は UnetLoaderGGUF.load_unet をベースに、
 # フルパス指定と ComfyUI の DynamicVRAM 無効化に対応させたもの。
 import collections
@@ -16,13 +17,20 @@ import comfy.model_management
 
 from .ops import GGMLOps, move_patch_to_device
 from .loader import gguf_sd_loader
-from .dequant import is_quantized, is_torch_compatible
+from .dequant import is_quantized, is_torch_compatible, dequantize_tensor
 
 
 class GGUFModelPatcher(comfy.model_patcher.ModelPatcher):
     patch_on_device = False
 
-    def patch_weight_to_device(self, key, device_to=None, inplace_update=False):
+    def patch_weight_to_device(self, key, device_to=None, inplace_update=False, return_weight=False, force_cast=False, **kwargs):
+        # 最新 ComfyUI の ModelPatcher.patch_weight_to_device は
+        # return_weight / force_cast 引数を持ち、モデル保存 (LazyCastingParam) や
+        # LoRA 抽出ノード等から return_weight=True で呼ばれる。
+        # 旧シグネチャのままだと TypeError になるため受け付ける。
+        if return_weight:
+            return self._gguf_patched_weight(key, device_to)
+
         if key not in self.patches:
             return
         weight = comfy.utils.get_attr(self.model, key)
@@ -52,6 +60,36 @@ class GGUFModelPatcher(comfy.model_patcher.ModelPatcher):
             comfy.utils.copy_to_param(self.model, key, out_weight)
         else:
             comfy.utils.set_attr_param(self.model, key, out_weight)
+
+    def _gguf_patched_weight(self, key, device_to=None):
+        """パッチ適用済みのウェイトを (モデルを書き換えずに) 返す。GGUF 量子化は逆量子化する。"""
+        weight = comfy.utils.get_attr(self.model, key)
+        if is_quantized(weight):
+            device = device_to if device_to is not None else getattr(weight, "device", None)
+            temp_weight = dequantize_tensor(weight.to(device) if device is not None else weight, torch.float32)
+            # 量子化ウェイトは元の浮動小数 dtype を持たないため、モデルの計算 dtype に合わせる
+            out_dtype = torch.float16
+            try:
+                model_dtype = self.model.get_dtype()
+                if isinstance(model_dtype, torch.dtype) and model_dtype.is_floating_point:
+                    out_dtype = model_dtype
+            except Exception:
+                pass
+        else:
+            if device_to is not None:
+                temp_weight = comfy.model_management.cast_to_device(weight, device_to, torch.float32, copy=True)
+            else:
+                temp_weight = weight.to(torch.float32, copy=True)
+            out_dtype = weight.dtype
+
+        if key not in self.patches:
+            return temp_weight.to(out_dtype) if temp_weight.dtype != out_dtype else temp_weight
+
+        patches = self.patches[key]
+        if device_to is not None:
+            patches = move_patch_to_device(patches, device_to)
+        out_weight = comfy.lora.calculate_weight(patches, temp_weight, key)
+        return comfy.float.stochastic_rounding(out_weight, out_dtype)
 
     def unpatch_model(self, device_to=None, unpatch_weights=True):
         if unpatch_weights:

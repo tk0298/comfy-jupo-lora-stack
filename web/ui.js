@@ -26,8 +26,38 @@ export const CONSTANTS = {
 
 // === ユーティリティ関数 ===
 export const Utils = {
-    isLowQuality: () => ((app.canvas.ds?.scale) || 1) <= 0.5,
-    
+    // Nodes 2.0 (Vue ノード) モードかどうか
+    isVueNodesMode: () => !!globalThis.LiteGraph?.vueNodesMode,
+
+    // Nodes 2.0 ではウィジェットごとの <canvas> は値変更/リサイズ時にしか再描画されないため、
+    // ズームアウト中に描画をスキップすると、ズームを戻しても空白のまま残ってしまう。
+    // Vue モードでは低品質描画 (スキップ) を行わない。
+    isLowQuality: () => {
+        if (Utils.isVueNodesMode()) return false;
+        return ((app.canvas?.ds?.scale) || 1) <= 0.5;
+    },
+
+    // app.canvas.prompt() は event.clientX/Y で位置を決めるため event 必須。
+    // ノードメニュー (Nodes 2.0 の Vue メニュー含む) から呼ぶ場合は event が無いので
+    // 最後のマウス位置で代用する。
+    prompt(title, value, callback, event = null) {
+        let ev = event;
+        if (!ev || !Number.isFinite(ev.clientX) || !Number.isFinite(ev.clientY)) {
+            const [x, y] = app.canvas?.mouse ?? [window.innerWidth / 2, window.innerHeight / 2];
+            ev = { clientX: x, clientY: y };
+        }
+        return app.canvas.prompt(title, value, callback, ev);
+    },
+
+    // ファイルパスの区切り文字 (/ と \) を無視して一致するものを options から探す
+    matchPathOption(selected, options) {
+        if (typeof selected !== "string") return selected;
+        const norm = (s) => String(s).replaceAll("\\", "/");
+        const target = norm(selected);
+        const list = Array.isArray(options) ? options : [];
+        return list.find(v => norm(v) === target) ?? selected;
+    },
+
     fitString(ctx, str, maxWidth) {
         const width = ctx.measureText(str).width;
         const ellipsis = "…";
@@ -85,6 +115,11 @@ export const Utils = {
 
     // defualt
     async showDefaultMenu(event, fileList, currentValue, callback) {
+        // ノードメニュー (Nodes 2.0 含む) から呼ばれた場合は event が無いので最後のマウス位置を使う
+        if (!event || !Number.isFinite(event.clientX)) {
+            const [x, y] = app.canvas?.mouse ?? [window.innerWidth / 2, window.innerHeight / 2];
+            event = new MouseEvent("contextmenu", { clientX: x, clientY: y });
+        }
 
         new LiteGraph.ContextMenu(fileList, {
             event: event,
