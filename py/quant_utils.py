@@ -1,5 +1,5 @@
 """
-量子化モデル (INT8 ConvRot / FP8 Scaled / NVFP4 等) の検出ユーティリティ。
+量子化モデル (INT8 ConvRot / FP8 Scaled / NVFP4 / INT4 等) の検出ユーティリティ。
 
 ComfyUI v0.27.0 以降の comfy_quant 形式 (per-layer メタデータ) と
 旧来の scaled_fp8 形式の両方を、safetensors ヘッダのみを読んで
@@ -90,6 +90,7 @@ def detect_quantization(filepath: str) -> dict | None:
     convrot = False
     convrot_groupsize = None
     num_layers = 0
+    linear_dtypes = set()
 
     def _consume_layer_conf(conf: dict):
         nonlocal convrot, convrot_groupsize, num_layers
@@ -102,6 +103,9 @@ def detect_quantization(filepath: str) -> dict | None:
         params_conf = conf.get("params", {})
         if not isinstance(params_conf, dict):
             params_conf = {}
+        # ConvRot W4A4 の演算 dtype (既定 int4。int8 指定のモデルは INT8 GEMM で演算)
+        if fmt == "convrot_w4a4":
+            linear_dtypes.add(str(conf.get("linear_dtype", params_conf.get("linear_dtype", "int4"))))
         if conf.get("convrot", params_conf.get("convrot", False)):
             convrot = True
             gs = conf.get("convrot_groupsize", params_conf.get("convrot_groupsize", 256))
@@ -122,11 +126,7 @@ def detect_quantization(filepath: str) -> dict | None:
 
     # --- 2) per-layer の *.comfy_quant キー (uint8 テンソルにJSONが格納されている)
     if not formats:
-        quant_keys = [k for k in header if k.endswith(".comfy_quant")]
-        for key in quant_keys:
-            raw = _read_tensor_bytes(filepath, header[key], base)
-            if not raw:
-                continue
+        for raw in _iter_comfy_quant_bytes(filepath, header, base):
             try:
                 _consume_layer_conf(json.loads(raw))
             except Exception:
@@ -146,6 +146,13 @@ def detect_quantization(filepath: str) -> dict | None:
         formats.add("nvfp4")
         modelopt = True
 
+    # --- 5) ComfyUI 非対応の INT4 形式 (Nunchaku SVDQuant / GPTQ / AWQ)
+    foreign_int4 = None
+    if not formats:
+        foreign_int4 = detect_foreign_int4(header)
+        if foreign_int4:
+            formats.add(foreign_int4)
+
     if not formats:
         return None
 
@@ -155,8 +162,68 @@ def detect_quantization(filepath: str) -> dict | None:
         "convrot_groupsize": convrot_groupsize,
         "num_layers": num_layers,
         "modelopt": modelopt,
+        "foreign_int4": foreign_int4,
+        # INT4 (W4A8) の Lloyd-Max コードブック付きか
+        "codebook": any(k.endswith(".weight_codebook") for k in header),
+        "linear_dtypes": linear_dtypes,
         "diffusion_only": is_diffusion_only_header(header),
     }
+
+
+def _iter_comfy_quant_bytes(filepath: str, header: dict, base: int, limit: int | None = None):
+    """
+    *.comfy_quant テンソル (JSON) の生バイトを、ファイルを 1 回だけ開いて順に返す。
+    limit を指定するとその個数で打ち切る (一覧表示用の軽量スキャン)。
+    """
+    keys = [k for k in header if k.endswith(".comfy_quant")]
+    if limit is not None:
+        keys = keys[:limit]
+    if not keys:
+        return
+    with open(filepath, "rb") as file:
+        for key in keys:
+            offsets = header[key].get("data_offsets") if isinstance(header[key], dict) else None
+            if not offsets or len(offsets) != 2:
+                continue
+            start, end = offsets
+            size = end - start
+            if size <= 0 or size > 65536:
+                continue
+            file.seek(base + start)
+            yield file.read(size)
+
+
+# ComfyUI 本体がネイティブに読める INT4 系の形式
+INT4_FORMATS = {"convrot_w4a4", "asym_w4a8_int8"}
+# 4〜6bit の低ビット形式 (NVFP4 / INT4 / INT6)。拡散モデル単体なら Checkpoint 一覧に表示する
+LOWBIT_FORMATS = {"nvfp4", "convrot_w4a4", "asym_w4a8_int8", "w6a8_int8"}
+# ComfyUI 非対応の INT4 形式 (検出してエラーで案内する)
+FOREIGN_INT4_FORMATS = {"svdquant_int4", "gptq_awq_int4"}
+
+
+def detect_foreign_int4(header: dict) -> str | None:
+    """
+    ComfyUI 本体では読めない INT4 形式を検出する。
+      - Nunchaku (SVDQuant W4A4): *.qweight + *.wscales (+ smooth_factor / lora_down 等)
+      - GPTQ / AWQ (LLM 由来の W4A16): *.qweight + *.qzeros + *.scales
+    """
+    has_qweight = has_wscales = has_qzeros = False
+    for k in header:
+        if k.endswith(".qweight"):
+            has_qweight = True
+        elif k.endswith(".wscales"):
+            has_wscales = True
+        elif k.endswith(".qzeros"):
+            has_qzeros = True
+        if has_qweight and (has_wscales or has_qzeros):
+            break
+    if not has_qweight:
+        return None
+    if has_wscales:
+        return "svdquant_int4"
+    if has_qzeros:
+        return "gptq_awq_int4"
+    return None
 
 
 # ===============================================
@@ -244,14 +311,38 @@ def scan_safetensors(filepath: str) -> dict | None:
     if cached and cached[0] == cache_key:
         return cached[1]
     try:
-        header, _ = read_safetensors_header(filepath)
+        header, base = read_safetensors_header(filepath)
     except Exception as e:
         logging.debug(f"[JupoQuant] ヘッダ読み込み失敗: {filepath}: {e}")
         result = None
     else:
         nvfp4 = header_has_nvfp4(header)
+        formats = set()
+        if nvfp4:
+            formats.add("nvfp4")
+        # INT4 / INT6 はキー名 (weight_scale のみ) では INT8 と区別できないため、
+        # _quantization_metadata か、先頭のいくつかの comfy_quant を読んで判定する
+        meta = header.get("__metadata__") or {}
+        quant_meta = meta.get("_quantization_metadata")
+        if isinstance(quant_meta, str):
+            for fmt in LOWBIT_FORMATS:
+                if f'"{fmt}"' in quant_meta:
+                    formats.add(fmt)
+        if not (formats & INT4_FORMATS) and any(k.endswith(".comfy_quant") for k in header):
+            try:
+                for raw in _iter_comfy_quant_bytes(filepath, header, base, limit=64):
+                    try:
+                        fmt = json.loads(raw).get("format")
+                    except Exception:
+                        continue
+                    if fmt in LOWBIT_FORMATS:
+                        formats.add(fmt)
+            except OSError:
+                pass
         result = {
             "nvfp4": nvfp4,
+            "formats": formats,
+            "lowbit": bool(formats & LOWBIT_FORMATS),
             "modelopt": nvfp4 and _looks_like_modelopt_nvfp4(header),
             "diffusion_only": is_diffusion_only_header(header),
         }
@@ -261,6 +352,16 @@ def scan_safetensors(filepath: str) -> dict | None:
 
 def is_nvfp4(info: dict | None) -> bool:
     return bool(info) and "nvfp4" in info.get("formats", set())
+
+
+def is_int4(info: dict | None) -> bool:
+    """ComfyUI ネイティブの INT4 系 (INT4 ConvRot W4A4 / INT4 W4A8)。"""
+    return bool(info) and bool(info.get("formats", set()) & INT4_FORMATS)
+
+
+def is_lowbit_int(info: dict | None) -> bool:
+    """ComfyUI ネイティブの INT4 / INT6 系。"""
+    return bool(info) and bool(info.get("formats", set()) & (INT4_FORMATS | {"w6a8_int8"}))
 
 
 # ===============================================
@@ -322,6 +423,113 @@ def nvfp4_runtime_status(device=None) -> dict:
     return {"loadable": loadable, "fast": fast, "reasons": reasons}
 
 
+def int4_runtime_status(formats: set, device=None) -> dict:
+    """
+    この ComfyUI で INT4 / INT6 (comfy_quant) を演算できるかを調べる。
+    戻り値: {"loadable": bool, "fast": bool, "reasons": [str], "notes": [str]}
+      loadable=False … comfy-kitchen が無い / ComfyUI がその形式に未対応で読み込めない
+      fast=False     … 読み込みは可能だが逆量子化して演算する (速度の利点が小さい)
+      notes          … 動作はするが知っておくとよい情報 (INT8 演算へのフォールバック等)
+    """
+    reasons, notes = [], []
+    loadable, fast = True, True
+
+    try:
+        import comfy.quant_ops as quant_ops
+    except Exception:
+        return {"loadable": False, "fast": False, "notes": [],
+                "reasons": ["ComfyUI が古く INT4 (comfy.quant_ops) に未対応です"]}
+
+    if not getattr(quant_ops, "_CK_AVAILABLE", False):
+        loadable = fast = False
+        reasons.append(
+            "comfy-kitchen が読み込めません (ComfyUI の Python で "
+            "`python -m pip install -r requirements.txt` を実行してください)"
+        )
+    algos = getattr(quant_ops, "QUANT_ALGOS", {})
+    missing = sorted(f for f in formats if f not in algos)
+    if missing:
+        loadable = fast = False
+        reasons.append(f"この ComfyUI は {', '.join(missing)} 形式に未対応です。ComfyUI を更新してください")
+
+    try:
+        import torch
+        cuda = torch.version.cuda
+        if cuda is None:
+            fast = False
+            reasons.append("CUDA 版 PyTorch ではありません")
+        elif tuple(int(x) for x in str(cuda).split(".")[:2]) < (13, 0):
+            fast = False
+            reasons.append(f"PyTorch の CUDA が {cuda} です (高速カーネルには cu130 以上が必要)")
+    except Exception:
+        pass
+
+    try:
+        import comfy.model_management as mm
+        if device is None:
+            device = mm.get_torch_device()
+        if hasattr(mm, "supports_int8_compute") and not mm.supports_int8_compute(device):
+            fast = False
+            reasons.append("このデバイスは INT8/INT4 演算に未対応です")
+        elif "convrot_w4a4" in formats and hasattr(mm, "is_nvidia") and mm.is_nvidia():
+            import torch
+            major, minor = torch.cuda.get_device_capability(device)
+            if major >= 9:
+                # comfy-kitchen の INT4 MMA カーネルは SM8x (RTX 30/40) / Turing 専用。
+                # Hopper / Blackwell (RTX 50 等) は INT8 GEMM で演算する (VRAM は 4bit のまま)
+                notes.append(
+                    f"この GPU (sm_{major}{minor}) は INT4 Tensor Core 非対応のため、"
+                    "INT4 ConvRot は INT8 演算で動作します (VRAM 使用量は 4bit のまま)"
+                )
+            elif (major, minor) < (7, 5):
+                fast = False
+                reasons.append(f"GPU (sm_{major}{minor}) が INT4/INT8 Tensor Core に未対応です (Turing 以降が必要)")
+    except Exception as e:
+        logging.debug(f"[JupoQuant] INT4 演算環境の確認に失敗: {e}")
+
+    return {"loadable": loadable, "fast": fast, "reasons": reasons, "notes": notes}
+
+
+def check_quant_loadable(info: dict | None, name: str = ""):
+    """
+    低ビット量子化モデル (NVFP4 / INT4 / INT6) を読み込めるか確認する。
+    読み込めない場合は分かりやすいエラー、高速演算できない場合は警告ログを出す。
+    """
+    if not info:
+        return
+    label = f" ({name})" if name else ""
+
+    foreign = info.get("foreign_int4")
+    if foreign == "svdquant_int4":
+        raise RuntimeError(
+            f"Nunchaku (SVDQuant) 形式の INT4 モデル{label}は ComfyUI 本体では読み込めません。"
+            "ComfyUI-nunchaku の専用ローダーを使うか、ComfyUI 形式 (comfy_quant) の INT4 モデルを使用してください"
+        )
+    if foreign == "gptq_awq_int4":
+        raise RuntimeError(
+            f"GPTQ / AWQ 形式の INT4 モデル{label}は ComfyUI 本体では読み込めません。"
+            "ComfyUI 形式 (comfy_quant) の INT4 モデルを使用してください"
+        )
+
+    check_nvfp4_loadable(info, name)
+
+    if is_lowbit_int(info):
+        formats = info["formats"] & (INT4_FORMATS | {"w6a8_int8"})
+        status = int4_runtime_status(formats)
+        fmt_label = format_label({**info, "formats": formats})
+        if not status["loadable"]:
+            raise RuntimeError(f"{fmt_label} モデル{label}を読み込めません: " + " / ".join(status["reasons"]))
+        if status["fast"]:
+            logging.info(f"[JupoQuant] {fmt_label} モデル{label}: INT 演算カーネルで演算します")
+        else:
+            logging.warning(
+                f"[JupoQuant] {fmt_label} モデル{label}は読み込めますが、逆量子化して演算するため"
+                "速度の利点が小さくなります: " + " / ".join(status["reasons"])
+            )
+        for note in status["notes"]:
+            logging.info(f"[JupoQuant] {note}")
+
+
 def check_nvfp4_loadable(info: dict | None, name: str = ""):
     """
     NVFP4 モデルを読み込めるか確認し、読み込めない場合は分かりやすいエラーを出す。
@@ -371,6 +579,18 @@ def format_label(info: dict | None) -> str:
             labels.append("NVFP4 (ModelOpt 形式・ComfyUI 非対応)" if info.get("modelopt") else "NVFP4")
         elif fmt == "mxfp8":
             labels.append("MXFP8")
+        elif fmt == "convrot_w4a4":
+            dtypes = info.get("linear_dtypes") or set()
+            suffix = " / INT8演算" if dtypes == {"int8"} else ""
+            labels.append(f"INT4 ConvRot (W4A4{suffix})")
+        elif fmt == "asym_w4a8_int8":
+            labels.append("INT4 (W4A8・Lloyd-Max)" if info.get("codebook") else "INT4 (W4A8)")
+        elif fmt == "w6a8_int8":
+            labels.append("INT6 (W6A8)")
+        elif fmt == "svdquant_int4":
+            labels.append("INT4 SVDQuant (Nunchaku 形式・ComfyUI-nunchaku が必要)")
+        elif fmt == "gptq_awq_int4":
+            labels.append("INT4 GPTQ/AWQ (ComfyUI 非対応)")
         else:
             labels.append(fmt)
 

@@ -35,6 +35,15 @@ LoRAをスタック形式で読み込みます
 - NVIDIA ModelOpt 形式の NVFP4 は ComfyUI 本体が非対応のため、分かりやすいエラーを出します
 - モデル情報ダイアログに `NVFP4` と、この環境で高速演算できるかを表示します
 
+### INT4 対応
+- ComfyUI 形式 (comfy_quant) の INT4 モデルを Checkpoint Loader / Selector から読み込めます
+  - `INT4 ConvRot (W4A4)` / `INT4 (W4A8)` (Lloyd-Max コードブック付きも可) / `INT6 (W6A8)`
+- `models/diffusion_models` にある INT4 / INT6 モデルも一覧に表示されます (CLIP / VAE は別のローダーで読み込んでください)
+- LoRA / LBW / start・end スケジュールは ComfyUI 本体の逆量子化パッチ経由でそのまま使えます
+- INT4 ConvRot の INT4 Tensor Core 演算は RTX 20 / 30 / 40 系向けです。RTX 50 系など新しい GPU では INT8 演算で動作します (VRAM 使用量は 4bit のまま)
+- ComfyUI 本体が読めない Nunchaku (SVDQuant) 形式・GPTQ / AWQ 形式の INT4 は、分かりやすいエラーで案内します
+- モデル情報ダイアログに INT4 の形式と、この環境での演算方法を表示します
+
 ### MOSS-Image 対応
 - MOSS-Image (Base / SFT および派生モデル) のLoRAをスタックに適用できます (ComfyUI本体のMOSS-Image対応が必要)
 - 融合 `proj.qkv` 形式の公式Comfy版 (BF16 / INT8 ConvRot) でも、別々の q/k/v を持つLoRAを本体のキー変換経由で適用します
