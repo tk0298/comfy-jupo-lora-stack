@@ -1,5 +1,8 @@
 from .utils import Endpoint
-from .quant_utils import detect_quantization, format_label, is_nvfp4, nvfp4_runtime_status
+from .quant_utils import (
+    detect_quantization, format_label, is_nvfp4, nvfp4_runtime_status,
+    is_lowbit_int, int4_runtime_status, INT4_FORMATS,
+)
 from .gguf_utils import list_checkpoints_with_gguf, resolve_gguf_path, is_gguf, resolve_checkpoint_path
 import folder_paths
 
@@ -77,6 +80,16 @@ async def load_metadata(req: web.Request):
                     metadata["__quantization__"] += " ※この環境では読み込めません: " + " / ".join(status["reasons"])
                 elif not status["fast"]:
                     metadata["__quantization__"] += " ※逆量子化で動作 (低速): " + " / ".join(status["reasons"])
+            # INT4 / INT6: 同様に演算環境を付記 (INT8 演算へのフォールバックも表示)
+            if is_lowbit_int(quant_info):
+                formats = quant_info["formats"] & (INT4_FORMATS | {"w6a8_int8"})
+                status = int4_runtime_status(formats)
+                if not status["loadable"]:
+                    metadata["__quantization__"] += " ※この環境では読み込めません: " + " / ".join(status["reasons"])
+                elif not status["fast"]:
+                    metadata["__quantization__"] += " ※逆量子化で動作 (低速): " + " / ".join(status["reasons"])
+                elif status["notes"]:
+                    metadata["__quantization__"] += " ※" + " / ".join(status["notes"])
             gguf_info = quant_info.get("gguf")
             if gguf_info:
                 if gguf_info.get("architecture"):

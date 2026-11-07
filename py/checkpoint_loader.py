@@ -4,7 +4,8 @@ from .quant_utils import (
     format_label,
     is_int8_convrot,
     is_nvfp4,
-    check_nvfp4_loadable,
+    is_lowbit_int,
+    check_quant_loadable,
     scan_safetensors,
     comfy_supports_layer_quant,
 )
@@ -128,12 +129,12 @@ def _check_quantized_checkpoint(ckpt_name: str):
             "ComfyUI v0.27.0 以降が必要です。ComfyUI を更新してください。"
         )
 
-    # NVFP4: ModelOpt 形式・comfy-kitchen 無し等は分かりやすいエラー、
-    #        高速演算できない環境 (Blackwell 以外 / cu130 未満) は警告
-    check_nvfp4_loadable(info, ckpt_name)
+    # NVFP4 / INT4: 非対応形式 (ModelOpt / Nunchaku / GPTQ) や comfy-kitchen 無し等は
+    #               分かりやすいエラー、高速演算できない環境は警告
+    check_quant_loadable(info, ckpt_name)
 
-    if is_int8_convrot(info) or is_nvfp4(info):
-        fmt = "NVFP4" if is_nvfp4(info) else "INT8 ConvRot"
+    if is_int8_convrot(info) or is_nvfp4(info) or is_lowbit_int(info):
+        fmt = format_label(info)
         logging.info(
             f"[JupoCheckpoint] {fmt}: LoRA はサンプリング時に "
             "逆量子化を介してネイティブに適用されます"
@@ -154,7 +155,7 @@ def _is_diffusion_only(full_path: str, info: dict | None) -> bool:
 
 def _load_diffusion_only(full_path: str, name: str):
     """
-    拡散モデル単体 (NVFP4 モデル等) を UNETLoader と同じ方法でロードする。
+    拡散モデル単体 (NVFP4 / INT4 モデル等) を UNETLoader と同じ方法でロードする。
     CLIP / VAE は含まれないため (MODEL, None, None) を返す。
     """
     import comfy.sd
@@ -182,7 +183,7 @@ def _load_checkpoint_auto(path: str):
     if is_gguf(path):
         return _load_gguf_checkpoint(path)
 
-    # NVFP4 モデル等の拡散モデル単体ファイル (diffusion_models フォルダ / checkpoints に置いたもの)
+    # NVFP4 / INT4 モデル等の拡散モデル単体ファイル (diffusion_models フォルダ / checkpoints に置いたもの)
     # は CheckpointLoaderSimple では「モデル形式を判定できない」エラーになるため、
     # 拡散モデルとしてロードする
     try:

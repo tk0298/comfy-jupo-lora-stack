@@ -63,17 +63,18 @@ def list_gguf_models() -> list:
         return []
 
 
-# NVFP4 の拡散モデルを探す ComfyUI フォルダ種別
+# NVFP4 / INT4 の拡散モデルを探す ComfyUI フォルダ種別
 _NVFP4_SOURCE_FOLDER = "diffusion_models"
 _SAFETENSORS_EXTS = (".safetensors", ".sft")
 
 
-def list_nvfp4_diffusion_models() -> list:
+def list_lowbit_diffusion_models() -> list:
     """
-    diffusion_models フォルダにある NVFP4 の拡散モデル (safetensors) の相対パス一覧。
-    NVFP4 モデルは拡散モデル単体で配布されることがほとんどなので、
+    diffusion_models フォルダにある低ビット量子化 (NVFP4 / INT4 / INT6) の
+    拡散モデル (safetensors) の相対パス一覧。
+    これらは拡散モデル単体で配布されることがほとんどなので、
     Checkpoint Loader / Selector からも選べるようにする。
-    ヘッダのキー名だけで判定し、結果は mtime でキャッシュする。
+    ヘッダ (と先頭の comfy_quant) だけで判定し、結果は mtime でキャッシュする。
     """
     from .quant_utils import scan_safetensors
     result = []
@@ -92,19 +93,23 @@ def list_nvfp4_diffusion_models() -> list:
         if not full_path:
             continue
         info = scan_safetensors(full_path)
-        if info and info.get("nvfp4"):
+        if info and info.get("lowbit"):
             result.append(name)
     return result
+
+
+# 旧名 (互換)
+list_nvfp4_diffusion_models = list_lowbit_diffusion_models
 
 
 def list_checkpoints_with_gguf() -> list:
     """
     通常の checkpoints 一覧の後ろに .gguf モデルと、
-    diffusion_models の NVFP4 モデルを追加した一覧。
+    diffusion_models の NVFP4 / INT4 モデルを追加した一覧。
     """
     base = list(folder_paths.get_filename_list("checkpoints"))
     seen = set(base)
-    for name in list_gguf_models() + list_nvfp4_diffusion_models():
+    for name in list_gguf_models() + list_lowbit_diffusion_models():
         if name not in seen:
             base.append(name)
             seen.add(name)
@@ -122,7 +127,7 @@ def resolve_gguf_path(name: str):
 def resolve_checkpoint_path(name: str):
     """
     checkpoints を優先し、無ければ .gguf 用の仮想フォルダ、
-    それでも無ければ diffusion_models (NVFP4 等の拡散モデル単体) からフルパスを解決する。
+    それでも無ければ diffusion_models (NVFP4 / INT4 等の拡散モデル単体) からフルパスを解決する。
     """
     path = None
     try:
