@@ -73,4 +73,18 @@ export const BlockConfigs = {
             ["final_", "OUT", "model"], 
         ], 
     }, 
+
+    // MiniMax H3 / H3 Image (P-H3-Image 含む): 単一ストリームDiT (blocks.0 ~ blocks.49 の50層)
+    // キーに "diffusion_model." を含めて完全一致させる
+    // ("blocks.1." だけだと token_refiner.blocks.1. にも一致してしまうため)
+    MINIMAX_H3: {
+        left: [
+            ["diffusion_model.token_refiner.", "REFINER", "model"], 
+            ...create_slider_info("diffusion_model.blocks", "BLOCK", 0, 24, "model"), 
+        ], 
+        right: [
+            ...create_slider_info("diffusion_model.blocks", "BLOCK", 25, 49, "model"), 
+            ["diffusion_model.final_layer.", "OUT", "model"], 
+        ], 
+    }, 
 }

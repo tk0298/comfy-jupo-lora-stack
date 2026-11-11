@@ -35,6 +35,54 @@ def build_native_key_map(model=None, clip=None) -> dict:
     return key_map
 
 
+# ai-toolkit 等の外部トレーナーが付けるプレフィックス
+#   transformer.<key>.lora_A.weight        (ai-toolkit の PEFT 形式)
+#   lora_transformer_<key_with_underscores> (ai-toolkit の kohya 形式)
+_TRAINER_PREFIXES = ("transformer.",)
+
+
+def _is_minimax_h3(model) -> bool:
+    """MiniMax H3 (動画) / H3 Image のモデルか。"""
+    try:
+        import comfy.model_base
+        cls = getattr(comfy.model_base, "MiniMaxH3", None)
+        return cls is not None and isinstance(getattr(model, "model", None), cls)
+    except Exception:
+        return False
+
+
+def add_arch_key_aliases(model, model_key_map: dict) -> dict:
+    """
+    本体のキー変換テーブルに、アーキテクチャ別の別名を追加する。
+
+    MiniMax H3 / H3 Image: 本体は生のキー名 ("blocks.0.attn.qkv_proj") と
+    diffusion_model. / lora_unet_ 形式しか登録しないが、ai-toolkit で学習した
+    LoRA は "transformer.blocks.0.attn.qkv_proj.lora_A.weight" (PEFT 形式) で
+    保存されるため、そのままでは 1 キーも一致しない。
+    生キー名のエントリから "transformer." / "lora_transformer_" の別名を作る。
+    値 (PDD ヘッドのスライス指定タプルを含む) は本体のものをそのまま使う。
+    """
+    if model is None or not model_key_map or not _is_minimax_h3(model):
+        return model_key_map
+
+    known_prefixes = ("diffusion_model.", "lora_unet_", "transformer.", "lora_transformer_",
+                      "base_model.", "lycoris_", "text_encoders.", "lora_te")
+    aliases = {}
+    for key, target in model_key_map.items():
+        if key.startswith(known_prefixes):
+            continue
+        target_key = target[0] if isinstance(target, tuple) else target
+        if not isinstance(target_key, str) or not target_key.startswith("diffusion_model."):
+            continue
+        aliases.setdefault(f"transformer.{key}", target)
+        aliases.setdefault(f"lora_transformer_{key.replace('.', '_')}", target)
+
+    if not aliases:
+        return model_key_map
+    # 本体のエントリを優先 (衝突時は上書きしない)
+    return {**aliases, **model_key_map}
+
+
 def diffusion_model_arch_name(model) -> str:
     """ログ表示用にUNet(DiT)のクラス名を取得する。取得できなければ空文字。"""
     try:
@@ -71,6 +119,10 @@ def build_state_dict_fallback_map(model) -> dict:
         base = key[: -len(".weight")]
         # 本体テーブルと衝突しないよう、未登録のキーのみ追加
         fallback.setdefault(base, f"diffusion_model.{key}")
+        # 外部トレーナーのプレフィックス付き (ai-toolkit の PEFT / kohya 形式)
+        for prefix in _TRAINER_PREFIXES:
+            fallback.setdefault(f"{prefix}{base}", f"diffusion_model.{key}")
+        fallback.setdefault(f"lora_transformer_{base.replace('.', '_')}", f"diffusion_model.{key}")
 
     return fallback
 
@@ -93,6 +145,7 @@ def resolve_loaded_patches(lora_sd: dict, model=None, clip=None, context_label: 
     model_key_map = {}
     if model is not None:
         model_key_map = comfy.lora.model_lora_keys_unet(model.model)
+        model_key_map = add_arch_key_aliases(model, model_key_map)
     clip_key_map = {}
     if clip is not None:
         clip_key_map = comfy.lora.model_lora_keys_clip(clip.cond_stage_model)

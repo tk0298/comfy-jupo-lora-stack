@@ -155,7 +155,7 @@ def _is_diffusion_only(full_path: str, info: dict | None) -> bool:
 
 def _load_diffusion_only(full_path: str, name: str):
     """
-    拡散モデル単体 (NVFP4 / INT4 モデル等) を UNETLoader と同じ方法でロードする。
+    拡散モデル単体 (NVFP4 / INT4 / MiniMax H3 Image 等) を UNETLoader と同じ方法でロードする。
     CLIP / VAE は含まれないため (MODEL, None, None) を返す。
     """
     import comfy.sd
@@ -166,6 +166,12 @@ def _load_diffusion_only(full_path: str, name: str):
         "[JupoCheckpoint] 拡散モデル単体のため CLIP / VAE は出力されません。"
         "CLIP / VAE は別のローダーで読み込んでください"
     )
+    scanned = scan_safetensors(full_path) or {}
+    if scanned.get("arch") == "minimax_h3_image":
+        logging.info(
+            "[JupoCheckpoint] MiniMax H3 Image: テキストエンコーダは「CLIPを読み込む」(type: minimax)、"
+            "VAE は MiniMax H3 用の VAE を使用してください"
+        )
     return (model, None, None)
 
 
