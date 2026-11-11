@@ -5,7 +5,7 @@ import comfy.lora_convert
 import comfy.hooks
 import logging
 
-from .lora_compat import build_state_dict_fallback_map, diffusion_model_arch_name
+from .lora_compat import build_state_dict_fallback_map, diffusion_model_arch_name, add_arch_key_aliases
 
 # 型用
 from comfy.model_patcher import ModelPatcher
@@ -146,11 +146,10 @@ class LBWLoRALoader:
         lbw_map = model_mapped | clip_mapped
         
         hook_group = comfy.hooks.HookGroup()
-        if len(lbw_map) > 0:
-            hook = LBWWeightHook(strength_model, strength_clip, loaded, lbw_map)
-        else:
-            hook = comfy.hooks.WeightHook(strength_model, strength_clip)
-            hook.weights = lora
+        # ブロック指定が無い場合も、解決済みのパッチ (互換マッピング・MiniMax H3 の
+        # "transformer." 別名を含む) を使う。本体の WeightHook に生の LoRA を渡すと
+        # 本体のキー変換テーブルだけで解決され、ai-toolkit 形式などが適用されないため。
+        hook = LBWWeightHook(strength_model, strength_clip, loaded, lbw_map)
         
         hook_group.add(hook)
         return hook_group
@@ -165,6 +164,8 @@ class LBWLoRALoader:
 
         if model is not None:
             model_key_map = comfy.lora.model_lora_keys_unet(model.model)
+            # MiniMax H3 / H3 Image: ai-toolkit の "transformer." 形式の別名を追加
+            model_key_map = add_arch_key_aliases(model, model_key_map)
         
         if clip is not None:
             clip_key_map = comfy.lora.model_lora_keys_clip(clip.cond_stage_model)

@@ -167,6 +167,7 @@ def detect_quantization(filepath: str) -> dict | None:
         "codebook": any(k.endswith(".weight_codebook") for k in header),
         "linear_dtypes": linear_dtypes,
         "diffusion_only": is_diffusion_only_header(header),
+        "arch": detect_arch_header(header),
     }
 
 
@@ -294,6 +295,25 @@ def is_diffusion_only_header(header: dict) -> bool:
     return max(counts.values()) <= 5
 
 
+def detect_arch_header(header: dict) -> str | None:
+    """
+    拡散モデル単体ファイルのアーキテクチャをキー名だけで判定する (一覧表示用)。
+    ComfyUI 本体の model_detection と同じ判定キーを使う。
+      minimax_h3_image … MiniMax H3 Image / P-H3-Image (音声ストリーム無し)
+      minimax_h3       … MiniMax H3 (動画 + 音声)
+    """
+    for prefix in ("", "model.diffusion_model."):
+        if f"{prefix}video_patch_proj.weight" in header and f"{prefix}condition_proj.weight" in header:
+            return "minimax_h3" if f"{prefix}audio_patch_proj.weight" in header else "minimax_h3_image"
+    return None
+
+
+ARCH_LABELS = {
+    "minimax_h3_image": "MiniMax H3 Image",
+    "minimax_h3": "MiniMax H3",
+}
+
+
 _header_cache: dict = {}
 
 
@@ -341,6 +361,7 @@ def scan_safetensors(filepath: str) -> dict | None:
                 pass
         result = {
             "nvfp4": nvfp4,
+            "arch": detect_arch_header(header),
             "formats": formats,
             "lowbit": bool(formats & LOWBIT_FORMATS),
             "modelopt": nvfp4 and _looks_like_modelopt_nvfp4(header),

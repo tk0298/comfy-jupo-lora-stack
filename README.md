@@ -35,6 +35,13 @@ LoRAをスタック形式で読み込みます
 - NVIDIA ModelOpt 形式の NVFP4 は ComfyUI 本体が非対応のため、分かりやすいエラーを出します
 - モデル情報ダイアログに `NVFP4` と、この環境で高速演算できるかを表示します
 
+### MiniMax H3 Image 対応
+- MiniMax H3 Image / P-H3-Image の拡散モデル (bf16 / INT8 ConvRot / W4A8) を Checkpoint Loader / Selector から読み込めます
+  - `models/diffusion_models` にあるものも一覧に表示されます。テキストエンコーダは「CLIPを読み込む」(type: minimax)、VAE は MiniMax H3 用のものを別に読み込んでください
+- ai-toolkit で学習した MiniMax H3 / H3 Image の LoRA (`transformer.` 形式) を適用できます (ComfyUI 本体の LoraLoader では読み込めない形式です)
+  - 通常適用・LBW・start / end スケジュールのすべてに対応
+- LBW に `MINIMAX_H3` (BLOCK 00〜49 / REFINER / OUT) を追加しました。ファイル名に `minimax` / `h3` / `h3image` を含む LoRA は自動で選択されます
+
 ### INT4 対応
 - ComfyUI 形式 (comfy_quant) の INT4 モデルを Checkpoint Loader / Selector から読み込めます
   - `INT4 ConvRot (W4A4)` / `INT4 (W4A8)` (Lloyd-Max コードブック付きも可) / `INT6 (W6A8)`

@@ -513,6 +513,11 @@ export class BlockWeightDialog extends BaseDialog {
         // ("mossy" など別単語の誤検出を避けるため区切り文字で囲まれた場合のみ)
         if (/moss[-_ ]?image/.test(lower) || /(^|[\/_\-\s.])moss($|[\/_\-\s.])/.test(lower)) return "MOSS";
 
+        // MiniMax H3 / H3 Image 判定: "minimax" / "h3image" / "h3_image" / "p-h3" か、単独の "h3" トークン
+        if (lower.includes("minimax") || /(^|[\/_\-\s.])p?[-_]?h3([-_ ]?image)?($|[\/_\-\s.])/.test(lower) || /h3[-_ ]?image/.test(lower)) {
+            return "MINIMAX_H3";
+        }
+
         // WAN 判定
         if (lower.includes("wan") || lower.includes("wanvid")) return "WAN";
 

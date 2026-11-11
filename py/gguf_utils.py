@@ -93,9 +93,16 @@ def list_lowbit_diffusion_models() -> list:
         if not full_path:
             continue
         info = scan_safetensors(full_path)
-        if info and info.get("lowbit"):
+        if not info:
+            continue
+        # 低ビット量子化モデル、または MiniMax H3 Image (bf16 / INT8 ConvRot 等すべての精度)
+        if info.get("lowbit") or (info.get("diffusion_only") and info.get("arch") in _LISTED_ARCHS):
             result.append(name)
     return result
+
+
+# diffusion_models から精度に関係なく Checkpoint 一覧に載せるアーキテクチャ
+_LISTED_ARCHS = {"minimax_h3_image"}
 
 
 # 旧名 (互換)
@@ -105,7 +112,7 @@ list_nvfp4_diffusion_models = list_lowbit_diffusion_models
 def list_checkpoints_with_gguf() -> list:
     """
     通常の checkpoints 一覧の後ろに .gguf モデルと、
-    diffusion_models の NVFP4 / INT4 モデルを追加した一覧。
+    diffusion_models の NVFP4 / INT4 モデル・MiniMax H3 Image を追加した一覧。
     """
     base = list(folder_paths.get_filename_list("checkpoints"))
     seen = set(base)
